@@ -9,10 +9,10 @@ export interface OrderRequest {
 }
 
 async function alpacaFetch(path: string, opts: RequestInit){
-  const base = process.env.BROKER_BASE_URL || 'https://paper-api.alpaca.markets';
+  const base = Deno.env.get('BROKER_BASE_URL') || 'https://paper-api.alpaca.markets';
   const headers = {
-    'APCA-API-KEY-ID': process.env.BROKER_KEY || '',
-    'APCA-API-SECRET-KEY': process.env.BROKER_SECRET || '',
+    'APCA-API-KEY-ID': Deno.env.get('BROKER_KEY') || '',
+    'APCA-API-SECRET-KEY': Deno.env.get('BROKER_SECRET') || '',
     ...(opts.headers || {})
   } as Record<string, string>;
   const res = await fetch(`${base}${path}`, { ...opts, headers });
@@ -44,11 +44,11 @@ export interface Bar {
 }
 
 export async function fetchPaperBars(symbol: string, timeframe='1D', limit=100): Promise<Bar[]>{
-  const base = process.env.BROKER_DATA_URL || 'https://data.alpaca.markets';
+  const base = Deno.env.get('BROKER_DATA_URL') || 'https://data.alpaca.markets';
   const res = await fetch(`${base}/v2/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`, {
     headers: {
-      'APCA-API-KEY-ID': process.env.BROKER_KEY || '',
-      'APCA-API-SECRET-KEY': process.env.BROKER_SECRET || ''
+      'APCA-API-KEY-ID': Deno.env.get('BROKER_KEY') || '',
+      'APCA-API-SECRET-KEY': Deno.env.get('BROKER_SECRET') || ''
     }
   });
   if (!res.ok){
