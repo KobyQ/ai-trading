@@ -1,5 +1,5 @@
 {
-  "name": "ai-trading-mvp",
+  "name": "ai-trading",
   "private": true,
   "version": "0.1.0",
   "packageManager": "pnpm@9.0.0",
@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "build": "pnpm -r build",
-    "dev": "pnpm --filter @mvp/web dev",
+    "dev": "pnpm --filter @ai-trading/web dev",
     "lint": "pnpm -r lint",
     "test": "pnpm -r test"
   }
