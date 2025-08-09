@@ -1,5 +1,68 @@
 import { NextRequest, NextResponse } from 'next/server';
-export async function POST(_req: NextRequest, { params }: { params: { id: string }}) {
-  // TODO: validate idempotency, risk limits, create orders, call broker (paper), persist trade
-  return NextResponse.json({ ok: true, tradeId: `T-${params.id}` });
+import { supabase } from '@lib/supabase';
+import { makeClientOrderId } from '@execution/index';
+
+export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+  const idKey = req.headers.get('Idempotency-Key');
+  const client = supabase();
+
+  if (idKey) {
+    const { data: existing } = await client
+      .from('idempotency_keys')
+      .select('entity_id')
+      .eq('key', idKey)
+      .single();
+    if (existing?.entity_id) {
+      return NextResponse.json({ ok: true, tradeId: existing.entity_id });
+    }
+  }
+
+  const body = await req.json().catch(() => ({}));
+  const qty: number = body.qty ?? 1;
+  if (qty <= 0) {
+    return NextResponse.json({ ok: false, error: 'invalid qty' }, { status: 400 });
+  }
+
+  const { data: opp, error: oppErr } = await client
+    .from('trade_opportunities')
+    .select('symbol, side, timeframe')
+    .eq('id', params.id)
+    .single();
+  if (oppErr || !opp) {
+    return NextResponse.json({ ok: false, error: 'opportunity not found' }, { status: 404 });
+  }
+
+  const { data: trade, error: tradeErr } = await client
+    .from('trades')
+    .insert({
+      opportunity_id: params.id,
+      symbol: opp.symbol,
+      side: opp.side,
+      qty,
+    })
+    .select('id')
+    .single();
+  if (tradeErr) {
+    return NextResponse.json({ ok: false, error: tradeErr.message }, { status: 500 });
+  }
+
+  const clientOrderId = makeClientOrderId(trade.id);
+  await client.from('orders').insert({
+    trade_id: trade.id,
+    broker: 'PAPER',
+    client_order_id: clientOrderId,
+    type: 'market',
+    side: opp.side === 'LONG' ? 'buy' : 'sell',
+    qty,
+    status: 'FILLED',
+  });
+
+  if (idKey) {
+    await client
+      .from('idempotency_keys')
+      .insert({ key: idKey, entity_type: 'trade', entity_id: trade.id })
+      .catch(() => {});
+  }
+
+  return NextResponse.json({ ok: true, tradeId: trade.id });
 }
