@@ -1,0 +1,1 @@
+export default function Page(){ return (<div><h2>Trades</h2><p>Live and historical trades.</p></div>); }

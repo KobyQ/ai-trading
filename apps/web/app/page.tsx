@@ -1,0 +1,1 @@
+export default function Page(){ return (<div>Welcome. Go to <a href='/dashboard'>Dashboard</a>.</div>); }
