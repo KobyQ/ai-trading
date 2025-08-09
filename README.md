@@ -1,6 +1,6 @@
 # AI Trading (Daily/Hourly)
 
-**AI-driven algorithmic trading MVP** using:
+**AI-Driven Algorithmic Trading System** using:
 
 - **Frontend**: Next.js (App Router) on **Vercel**
 - **Backend**: **Supabase** (Postgres + Auth + RLS + Edge Functions + pg_cron)
