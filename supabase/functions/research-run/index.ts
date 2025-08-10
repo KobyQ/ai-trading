@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { fetchPaperBars } from "../../packages/execution/index.ts";
-import { sma, rsi, detectRegime } from "../../packages/strategy/index.ts";
+import { fetchPaperBars } from "../packages/execution/index.ts";
+import { sma, rsi, detectRegime } from "../packages/strategy/index.ts";
 
 /**
  * Research run generates a simple trade opportunity for a given symbol.
