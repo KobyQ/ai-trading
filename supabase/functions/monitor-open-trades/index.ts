@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { fetchPaperBars } from "../_shared/execution.ts";
 import {
   nextTrailLevel,
   shouldTightenTrail,
@@ -7,17 +8,13 @@ import {
 } from "../../../packages/risk/index.ts";
 
 async function fetchLatestPrice(symbol: string) {
-  const base = Deno.env.get("BROKER_DATA_URL") ??
-    "https://data.alpaca.markets";
-  const res = await fetch(
-    `${base}/v2/stocks/${symbol}/trades/latest`,
-    {
-      headers: {
-        "APCA-API-KEY-ID": Deno.env.get("BROKER_KEY") ?? "",
-        "APCA-API-SECRET-KEY": Deno.env.get("BROKER_SECRET") ?? "",
-      },
+  const base = Deno.env.get("BROKER_DATA_URL") ?? "https://data.alpaca.markets";
+  const res = await fetch(`${base}/v2/stocks/${symbol}/trades/latest`, {
+    headers: {
+      "APCA-API-KEY-ID": Deno.env.get("BROKER_KEY") ?? "",
+      "APCA-API-SECRET-KEY": Deno.env.get("BROKER_SECRET") ?? "",
     },
-  );
+  });
   if (!res.ok) return null;
   const json = await res.json();
   return json.trade?.p ?? null;
@@ -26,66 +23,115 @@ async function fetchLatestPrice(symbol: string) {
 /**
  * Simple per-minute monitor for open trades.
  *
- * Current implementation checks for trades that have been open for more than
- * 24 hours and closes them with a `TTL` reason. More sophisticated trailing
- * stop adjustments can be added later.
+ * Checks TTL, stop/target hits, max loss (1R), risk % caps, and manages trailing stops.
  */
 serve(async (_req) => {
   const url = Deno.env.get("SUPABASE_URL");
   const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!url || !key) {
-    return new Response(
-      JSON.stringify({ ok: false, error: "missing env" }),
-      { status: 500, headers: { "content-type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ ok: false, error: "missing env" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
   }
   const supabase = createClient(url, key);
 
   const { data: trades, error } = await supabase
     .from("trades")
-    .select("id, symbol, side, qty, entry_price, stop_params_json, opened_at")
+    .select(
+      "id, symbol, side, qty, entry_price, stop_params_json, opened_at, opportunity_id",
+    )
     .eq("status", "OPEN");
   if (error) {
-    return new Response(
-      JSON.stringify({ ok: false, error: error.message }),
-      { status: 500, headers: { "content-type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ ok: false, error: error.message }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
   }
+
+  const { data: limits } = await supabase
+    .from("risk_limits")
+    .select("cap_type, value")
+    .eq("scope", "TRADE")
+    .eq("active", true);
+  const pctLimit = limits?.find((l) => l.cap_type === "PCT")?.value as
+    | number
+    | undefined;
 
   let closed = 0;
   let openCount = 0;
   const exposures = new Map<string, number>();
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
+
   for (const t of trades ?? []) {
     const price = await fetchLatestPrice(t.symbol);
     if (price == null || t.qty == null) continue;
 
     const opened = t.opened_at ? new Date(t.opened_at).getTime() : now;
-    const sideMult = t.side === "LONG" ? 1 : -1;
-    const entry = t.entry_price ?? price;
-    const stop = t.stop_params_json?.stop;
-    const initial = t.stop_params_json?.initial ?? stop;
+
+    // Pull static plan (entry/stop/target) from opportunity if present
+    const { data: opp } = await supabase
+      .from("trade_opportunities")
+      .select("entry_plan_json, stop_plan_json, take_profit_json")
+      .eq("id", t.opportunity_id)
+      .maybeSingle();
+
+    // Dynamic (mutable) stop params from the trade row
+    const entry = t.entry_price ?? opp?.entry_plan_json?.price ?? price;
+    const stop =
+      t.stop_params_json?.stop ?? opp?.stop_plan_json?.stop ?? null;
+    const initial =
+      t.stop_params_json?.initial ??
+      opp?.stop_plan_json?.initial ??
+      stop ??
+      null;
     const lastLevel = t.stop_params_json?.trail_level ?? 0;
+    const target = opp?.take_profit_json?.tp ?? null;
+
+    const sideMult = t.side === "LONG" ? 1 : -1;
     const r = initial != null ? Math.abs(entry - initial) : null;
     const pnl = (price - entry) * t.qty * sideMult;
     const rMultiple = r ? ((price - entry) * sideMult) / r : 0;
 
-    let shouldClose = false;
+    // Determine close reason(s)
     let reason = "";
-    if (now - opened > dayMs) {
-      shouldClose = true;
-      reason = "TTL";
+    // Hard time-to-live
+    if (!reason && now - opened > dayMs) reason = "TTL";
+
+    // Percent risk cap check from opportunity plan
+    if (!reason && entry && stop != null && pctLimit) {
+      const riskPct =
+        t.side === "LONG"
+          ? ((entry - stop) / entry) * 100
+          : ((stop - entry) / entry) * 100;
+      if (riskPct > pctLimit) reason = "RISK";
     }
-    if (stop != null && ((sideMult === 1 && price <= stop) || (sideMult === -1 && price >= stop))) {
-      shouldClose = true;
-      reason = "STOP";
-    } else if (r && pnl <= -r * t.qty) {
-      shouldClose = true;
+
+    // Stop/Target checks
+    if (!reason && stop != null) {
+      if (
+        (t.side === "LONG" && price <= stop) ||
+        (t.side === "SHORT" && price >= stop)
+      ) {
+        reason = "STOP";
+      }
+    }
+    if (
+      !reason &&
+      target != null &&
+      ((t.side === "LONG" && price >= target) ||
+        (t.side === "SHORT" && price <= target))
+    ) {
+      reason = "TARGET";
+    }
+
+    // Max loss: breach of -1R from initial stop
+    if (!reason && r && pnl <= -r * t.qty) {
       reason = "MAX_LOSS";
     }
 
-    if (shouldClose) {
+    if (reason) {
       const { error: updErr } = await supabase
         .from("trades")
         .update({
@@ -98,6 +144,7 @@ serve(async (_req) => {
       continue;
     }
 
+    // Trailing stop management
     if (r && shouldTightenTrail(rMultiple, lastLevel)) {
       const next = nextTrailLevel(rMultiple, lastLevel);
       if (next != null && initial != null) {
@@ -117,14 +164,12 @@ serve(async (_req) => {
     }
 
     openCount++;
-    exposures.set(
-      t.symbol,
-      (exposures.get(t.symbol) ?? 0) + price * t.qty,
-    );
+    exposures.set(t.symbol, (exposures.get(t.symbol) ?? 0) + price * t.qty);
   }
 
   const maxTrades = Number(Deno.env.get("MAX_CONCURRENT_TRADES") ?? "10");
   const maxExposure = Number(Deno.env.get("MAX_GROUP_EXPOSURE_USD") ?? "100000");
+
   let killSwitch = false;
   if (openCount > maxTrades) killSwitch = true;
   for (const exp of exposures.values()) {
@@ -133,6 +178,7 @@ serve(async (_req) => {
       break;
     }
   }
+
   if (killSwitch) {
     await supabase
       .from("audit_log")

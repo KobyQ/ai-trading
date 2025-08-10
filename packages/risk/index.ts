@@ -5,6 +5,26 @@ export function sizeByVol(equityUSD: number, atrUSD: number, maxRiskPct = 0.01) 
   return Math.max(qty, 0);
 }
 
+export function sizeWithRiskCaps(
+  equityUSD: number,
+  atrUSD: number,
+  dayRiskUSD: number,
+  weekRiskUSD: number,
+  perTradePct = 0.01,
+  dayPct = 0.02,
+  weekPct = 0.05,
+) {
+  // base position by volatility
+  const baseQty = sizeByVol(equityUSD, atrUSD, perTradePct);
+  if (atrUSD <= 0) return 0;
+  // remaining risk capital for day and week
+  const remainingDay = Math.max(equityUSD * dayPct - dayRiskUSD, 0);
+  const remainingWeek = Math.max(equityUSD * weekPct - weekRiskUSD, 0);
+  const dayQty = Math.floor(remainingDay / atrUSD);
+  const weekQty = Math.floor(remainingWeek / atrUSD);
+  return Math.max(Math.min(baseQty, dayQty, weekQty), 0);
+}
+
 // Determine the next trailing stop level in 0.5R increments.
 export function nextTrailLevel(rMultiple: number, lastLevel = 0) {
   const step = 0.5;
