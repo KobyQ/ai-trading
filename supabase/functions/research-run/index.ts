@@ -22,7 +22,60 @@ serve(async (req) => {
   const regime = detectRegime(closes);
   const last = bars[bars.length - 1];
 
-  const aiSummary = `Regime ${regime}; SMA20 ${sma20.at(-1)?.toFixed(2)}, RSI14 ${rsi14.at(-1)?.toFixed(2)}`;
+  const azureEndpoint = Deno.env.get("AZURE_OPENAI_ENDPOINT");
+  const azureKey = Deno.env.get("AZURE_OPENAI_API_KEY");
+  const azureDeployment =
+    Deno.env.get("AZURE_OPENAI_DEPLOYMENT") ??
+    Deno.env.get("AZURE_OPENAI_DEPLOYMENT_ID");
+  const azureApiVersion =
+    Deno.env.get("AZURE_OPENAI_API_VERSION") ?? "2023-07-01-preview";
+
+  let aiSummary =
+    `Regime ${regime}; SMA20 ${sma20.at(-1)?.toFixed(2)}, RSI14 ${rsi14.at(-1)?.toFixed(2)}`;
+  let aiRisks = "High volatility";
+
+  if (azureEndpoint && azureKey && azureDeployment) {
+    try {
+      const prompt =
+        `You are a trading assistant. Given the following data for ${symbol} ` +
+        `with timeframe ${timeframe}: Regime ${regime}; SMA20 ${
+          sma20.at(-1)?.toFixed(2)
+        }; RSI14 ${rsi14.at(-1)?.toFixed(2)}. ` +
+        `Provide a brief summary and highlight key risks. ` +
+        `Respond in JSON format with fields "summary" and "risks".`;
+      const azureRes = await fetch(
+        `${azureEndpoint}/openai/deployments/${azureDeployment}/chat/completions?api-version=${azureApiVersion}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "api-key": azureKey,
+          },
+          body: JSON.stringify({
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are a helpful investment research assistant.",
+              },
+              { role: "user", content: prompt },
+            ],
+            max_tokens: 200,
+            temperature: 0.2,
+          }),
+        },
+      );
+      const azureJson = await azureRes.json();
+      const content = azureJson.choices?.[0]?.message?.content;
+      if (content) {
+        const parsed = JSON.parse(content);
+        aiSummary = parsed.summary ?? aiSummary;
+        aiRisks = parsed.risks ?? aiRisks;
+      }
+    } catch (e) {
+      console.error("Azure OpenAI error", e);
+    }
+  }
 
   const url = Deno.env.get("SUPABASE_URL");
   const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -47,7 +100,7 @@ serve(async (req) => {
       expected_return: 1,
       confidence: 0.5,
       ai_summary: aiSummary,
-      ai_risks: "High volatility",
+      ai_risks: aiRisks,
     })
     .select("id")
     .single();
