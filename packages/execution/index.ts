@@ -1,33 +1,59 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { insertAuditLog } from "../core/audit.ts";
 
-export function makeClientOrderId(tradeId: string, n=1){
+export function makeClientOrderId(tradeId: string, n = 1) {
   return `${tradeId}-${n}`;
 }
 
 export interface OrderRequest {
-  symbol: string; side: 'buy'|'sell'; qty: number;
-  type: 'market'|'limit'|'stop'|'stop_limit';
-  limitPrice?: number; stopPrice?: number; tif?: 'day'|'ioc'|'fok';
+  symbol: string;
+  side: 'buy' | 'sell';
+  qty: number;
+  type: 'market' | 'limit' | 'stop' | 'stop_limit';
+  limitPrice?: number;
+  stopPrice?: number;
+  tif?: 'day' | 'ioc' | 'fok';
   clientOrderId?: string;
 }
 
-async function alpacaFetch(path: string, opts: RequestInit){
-  const base = Deno.env.get('BROKER_BASE_URL') || 'https://paper-api.alpaca.markets';
+async function alpacaFetch(path: string, opts: RequestInit) {
+  const base =
+    Deno.env.get('BROKER_BASE_URL') || 'https://paper-api.alpaca.markets';
   const headers = {
     'APCA-API-KEY-ID': Deno.env.get('BROKER_KEY') || '',
     'APCA-API-SECRET-KEY': Deno.env.get('BROKER_SECRET') || '',
-    ...(opts.headers || {})
+    ...(opts.headers || {}),
   } as Record<string, string>;
   const res = await fetch(`${base}${path}`, { ...opts, headers });
-  if (!res.ok){
+  if (!res.ok) {
     const text = await res.text();
     throw new Error(`Alpaca error ${res.status}: ${text}`);
   }
   return res.json();
 }
 
-export async function placePaperOrder(order: OrderRequest){
-  return alpacaFetch('/v2/orders', {
+export async function placePaperOrder(
+  order: OrderRequest,
+  supabase?: SupabaseClient,
+) {
+  const client =
+    supabase ||
+    (() => {
+      const url = Deno.env.get('SUPABASE_URL');
+      const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+      return url && key ? createClient(url, key) : undefined;
+    })();
+
+  if (client) {
+    await insertAuditLog(client, {
+      actor_type: 'SYSTEM',
+      action: 'PLACE_ORDER',
+      entity_type: 'order',
+      payload_json: order,
+    });
+  }
+
+  const res = await alpacaFetch('/v2/orders', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -39,8 +65,18 @@ export async function placePaperOrder(order: OrderRequest){
       limit_price: order.limitPrice,
       stop_price: order.stopPrice,
       client_order_id: order.clientOrderId,
-    })
+    }),
   });
+
+  if (client) {
+    await insertAuditLog(client, {
+      actor_type: 'SYSTEM',
+      action: 'ORDER_RESPONSE',
+      entity_type: 'order',
+      payload_json: res,
+    });
+  }
+  return res;
 }
 
 export interface TrackedOrderRequest extends OrderRequest {
@@ -49,8 +85,9 @@ export interface TrackedOrderRequest extends OrderRequest {
   n?: number;
 }
 
-export async function placeAndTrackOrder(req: TrackedOrderRequest){
-  const clientOrderId = req.clientOrderId || makeClientOrderId(req.tradeId, req.n);
+export async function placeAndTrackOrder(req: TrackedOrderRequest) {
+  const clientOrderId =
+    req.clientOrderId || makeClientOrderId(req.tradeId, req.n);
   const orderRes = await placePaperOrder({ ...req, clientOrderId });
 
   const { data: orderRow } = await req.supabase
@@ -84,7 +121,9 @@ export async function placeAndTrackOrder(req: TrackedOrderRequest){
   let loops = 0;
   while (status !== 'filled' && status !== 'canceled' && loops < 10) {
     await new Promise((r) => setTimeout(r, 1000));
-    const upd = await alpacaFetch(`/v2/orders/${orderRes.id}`, { method: 'GET' });
+    const upd = await alpacaFetch(`/v2/orders/${orderRes.id}`, {
+      method: 'GET',
+    });
     status = upd.status;
     const newFilled = Number(upd.filled_qty || 0);
     if (newFilled > filledQty) {
@@ -102,7 +141,9 @@ export async function placeAndTrackOrder(req: TrackedOrderRequest){
   }
 
   if (filledQty < req.qty && status !== 'canceled') {
-    await alpacaFetch(`/v2/orders/${orderRes.id}`, { method: 'DELETE' }).catch(() => {});
+    await alpacaFetch(`/v2/orders/${orderRes.id}`, { method: 'DELETE' }).catch(
+      () => {},
+    );
     status = 'canceled';
     last.status = status;
   }
@@ -119,22 +160,34 @@ export async function placeAndTrackOrder(req: TrackedOrderRequest){
 }
 
 export interface Bar {
-  t: string; o: number; h: number; l: number; c: number; v: number;
+  t: string;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
 }
 
-export async function fetchPaperBars(symbol: string, timeframe='1D', limit=100): Promise<Bar[]>{
-  const base = Deno.env.get('BROKER_DATA_URL') || 'https://data.alpaca.markets';
-  const res = await fetch(`${base}/v2/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`, {
-    headers: {
-      'APCA-API-KEY-ID': Deno.env.get('BROKER_KEY') || '',
-      'APCA-API-SECRET-KEY': Deno.env.get('BROKER_SECRET') || ''
-    }
-  });
-  if (!res.ok){
+export async function fetchPaperBars(
+  symbol: string,
+  timeframe = '1D',
+  limit = 100,
+): Promise<Bar[]> {
+  const base =
+    Deno.env.get('BROKER_DATA_URL') || 'https://data.alpaca.markets';
+  const res = await fetch(
+    `${base}/v2/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`,
+    {
+      headers: {
+        'APCA-API-KEY-ID': Deno.env.get('BROKER_KEY') || '',
+        'APCA-API-SECRET-KEY': Deno.env.get('BROKER_SECRET') || '',
+      },
+    },
+  );
+  if (!res.ok) {
     const text = await res.text();
     throw new Error(`Alpaca data error ${res.status}: ${text}`);
   }
   const json = await res.json();
   return json.bars || [];
 }
-

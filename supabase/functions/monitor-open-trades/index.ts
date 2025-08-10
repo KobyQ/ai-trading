@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { fetchPaperBars } from "../_shared/execution.ts";
+import { insertAuditLog } from "../_shared/audit.ts";
 import {
   nextTrailLevel,
   shouldTightenTrail,
@@ -140,7 +140,16 @@ serve(async (_req) => {
           closed_at: new Date().toISOString(),
         })
         .eq("id", t.id);
-      if (!updErr) closed++;
+      if (!updErr) {
+        closed++;
+        await insertAuditLog(supabase, {
+          actor_type: "SYSTEM",
+          action: "CLOSE_TRADE",
+          entity_type: "trade",
+          entity_id: t.id,
+          payload_json: { reason },
+        });
+      }
       continue;
     }
 
