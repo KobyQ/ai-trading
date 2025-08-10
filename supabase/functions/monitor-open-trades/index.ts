@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { insertAuditLog } from "../_shared/audit.ts";
 import {
+  exposureByCorrelationGroup,
   nextTrailLevel,
   shouldTightenTrail,
   trailStop,
@@ -39,7 +40,7 @@ serve(async (_req) => {
   const { data: trades, error } = await supabase
     .from("trades")
     .select(
-      "id, symbol, side, qty, entry_price, stop_params_json, opened_at, opportunity_id",
+      "id, symbol, correlation_group, side, qty, entry_price, stop_params_json, opened_at, opportunity_id",
     )
     .eq("status", "OPEN");
   if (error) {
@@ -58,9 +59,17 @@ serve(async (_req) => {
     | number
     | undefined;
 
+  const { data: groupLimits } = await supabase
+    .from("risk_limits")
+    .select("cap_type, value")
+    .eq("scope", "GROUP")
+    .eq("active", true);
+  const groupUsdLimit = groupLimits?.find((l) => l.cap_type === "USD")
+    ?.value as number | undefined;
+
   let closed = 0;
   let openCount = 0;
-  const exposures = new Map<string, number>();
+  const positions: { group: string; qty: number; price: number }[] = [];
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
 
@@ -218,16 +227,21 @@ serve(async (_req) => {
     }
 
     openCount++;
-    exposures.set(t.symbol, (exposures.get(t.symbol) ?? 0) + price * t.qty);
+    positions.push({
+      group: t.correlation_group ?? t.symbol,
+      qty: t.qty,
+      price,
+    });
   }
 
+  const exposures = exposureByCorrelationGroup(positions);
+
   const maxTrades = Number(Deno.env.get("MAX_CONCURRENT_TRADES") ?? "10");
-  const maxExposure = Number(Deno.env.get("MAX_GROUP_EXPOSURE_USD") ?? "100000");
 
   let killSwitch = false;
   if (openCount > maxTrades) killSwitch = true;
-  for (const exp of exposures.values()) {
-    if (Math.abs(exp) > maxExposure) {
+  for (const exp of Object.values(exposures)) {
+    if (groupUsdLimit != null && Math.abs(exp) > groupUsdLimit) {
       killSwitch = true;
       break;
     }
@@ -242,7 +256,7 @@ serve(async (_req) => {
         entity_type: "PORTFOLIO",
         payload_json: {
           openCount,
-          exposures: Object.fromEntries(exposures.entries()),
+          exposures,
         },
       })
       .catch(() => {});
