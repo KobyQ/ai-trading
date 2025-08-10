@@ -57,6 +57,11 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     status: 'FILLED',
   });
 
+  await client
+    .from('trade_opportunities')
+    .update({ status: 'APPROVED' })
+    .eq('id', params.id);
+
   if (idKey) {
     await client
       .from('idempotency_keys')
