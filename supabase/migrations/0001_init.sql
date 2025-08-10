@@ -36,6 +36,8 @@ create table if not exists trade_opportunities (
   id uuid primary key default gen_random_uuid(),
   report_id uuid,
   strategy_id uuid,
+  model_id uuid,
+  model_version text,
   symbol text not null,
   side text check (side in ('LONG','SHORT')) not null,
   timeframe text not null,

@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { insertAuditLog } from "../_shared/audit.ts";
 
 /**
  * Simple per-minute monitor for open trades.
@@ -44,7 +45,16 @@ serve(async (_req) => {
           closed_at: new Date().toISOString(),
         })
         .eq("id", t.id);
-      if (!updErr) closed++;
+      if (!updErr) {
+        closed++;
+        await insertAuditLog(supabase, {
+          actor_type: "SYSTEM",
+          action: "CLOSE_TRADE",
+          entity_type: "trade",
+          entity_id: t.id,
+          payload_json: { reason: "TTL" },
+        });
+      }
     }
   }
 
