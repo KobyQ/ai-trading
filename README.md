@@ -38,8 +38,10 @@
    pnpm dev
    ```
 
-4. **Supabase**  
-   - Create a Supabase project, run SQL from `supabase/migrations/0001_init.sql`  
+4. **Supabase**
+   - Create a Supabase project, run SQL from `supabase/migrations/0001_init.sql`
+   - Apply RLS policies from `supabase/policies`
+   - Enable TOTP-based MFA via `supabase/config.toml`
    - Deploy functions:
      ```bash
      supabase functions deploy research-run
@@ -50,6 +52,6 @@
    - Configure Supabase Scheduler/pg_cron for daily/hourly research and per-minute monitoring (see SQL comments at top of migration).
 
 ## Notes
-- Orders are **paper** by default (stubbed broker). Wire your broker keys when ready.
+- Orders are **paper** by default (stubbed broker). Broker credentials are loaded from Azure Key Vault and rotated quarterly.
 - All writes go to Postgres with idempotency and full audit logs.
 - Trailing-stop tightening occurs on discrete milestones (+0.5R, +1R, …).

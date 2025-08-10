@@ -1,0 +1,8 @@
+[auth]
+  # Enable TOTP-based multi-factor authentication
+  enable_mfa = true
+
+[auth.mfa]
+  enabled = true
+  factor_types = ["totp"]
+  issuer = "ai-trading"

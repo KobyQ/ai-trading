@@ -15,11 +15,21 @@ export interface OrderRequest {
   tif?: 'day' | 'ioc' | 'fok';
 }
 
+import { getBrokerCredentials } from "../../../packages/azure/keyVault.ts";
+let credsPromise: Promise<{ key: string; secret: string }> | null = null;
+async function creds() {
+  if (!credsPromise) {
+    credsPromise = getBrokerCredentials();
+  }
+  return credsPromise;
+}
+
 async function alpacaFetch(path: string, opts: RequestInit) {
   const base = Deno.env.get('BROKER_BASE_URL') ?? 'https://paper-api.alpaca.markets';
+  const { key, secret } = await creds();
   const headers = {
-    'APCA-API-KEY-ID': Deno.env.get('BROKER_KEY') ?? '',
-    'APCA-API-SECRET-KEY': Deno.env.get('BROKER_SECRET') ?? '',
+    'APCA-API-KEY-ID': key,
+    'APCA-API-SECRET-KEY': secret,
     ...(opts.headers ?? {})
   } as Record<string, string>;
   const res = await fetch(`${base}${path}`, { ...opts, headers });
@@ -87,12 +97,13 @@ export interface Bar {
 
 export async function fetchPaperBars(symbol: string, timeframe = '1D', limit = 100): Promise<Bar[]> {
   const base = Deno.env.get('BROKER_DATA_URL') ?? 'https://data.alpaca.markets';
+  const { key, secret } = await creds();
   const res = await fetch(
     `${base}/v2/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`,
     {
       headers: {
-        'APCA-API-KEY-ID': Deno.env.get('BROKER_KEY') ?? '',
-        'APCA-API-SECRET-KEY': Deno.env.get('BROKER_SECRET') ?? '',
+        'APCA-API-KEY-ID': key,
+        'APCA-API-SECRET-KEY': secret,
       },
     },
   );

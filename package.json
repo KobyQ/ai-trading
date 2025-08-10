@@ -7,6 +7,10 @@
     "apps/*",
     "packages/*"
   ],
+  "dependencies": {
+    "@azure/identity": "^3.4.0",
+    "@azure/keyvault-secrets": "^4.7.0"
+  },
   "scripts": {
     "build": "pnpm -r build",
     "dev": "pnpm --filter @ai-trading/web dev",

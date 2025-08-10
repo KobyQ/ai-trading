@@ -1,5 +1,6 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { insertAuditLog } from "../core/audit.ts";
+import { getBrokerCredentials } from "../azure/keyVault.ts";
 
 export function makeClientOrderId(tradeId: string, n = 1) {
   return `${tradeId}-${n}`;
@@ -16,12 +17,31 @@ export interface OrderRequest {
   clientOrderId?: string;
 }
 
+// Prefer fetching broker creds from Key Vault; fall back to env if needed.
+let credsPromise: Promise<{ key: string; secret: string }> | null = null;
+async function creds() {
+  if (!credsPromise) {
+    credsPromise = (async () => {
+      try {
+        return await getBrokerCredentials();
+      } catch {
+        return {
+          key: Deno.env.get('BROKER_KEY') || '',
+          secret: Deno.env.get('BROKER_SECRET') || '',
+        };
+      }
+    })();
+  }
+  return credsPromise;
+}
+
 async function alpacaFetch(path: string, opts: RequestInit) {
   const base =
     Deno.env.get('BROKER_BASE_URL') || 'https://paper-api.alpaca.markets';
+  const { key, secret } = await creds();
   const headers = {
-    'APCA-API-KEY-ID': Deno.env.get('BROKER_KEY') || '',
-    'APCA-API-SECRET-KEY': Deno.env.get('BROKER_SECRET') || '',
+    'APCA-API-KEY-ID': key,
+    'APCA-API-SECRET-KEY': secret,
     ...(opts.headers || {}),
   } as Record<string, string>;
   const res = await fetch(`${base}${path}`, { ...opts, headers });
@@ -175,12 +195,13 @@ export async function fetchPaperBars(
 ): Promise<Bar[]> {
   const base =
     Deno.env.get('BROKER_DATA_URL') || 'https://data.alpaca.markets';
+  const { key, secret } = await creds();
   const res = await fetch(
     `${base}/v2/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`,
     {
       headers: {
-        'APCA-API-KEY-ID': Deno.env.get('BROKER_KEY') || '',
-        'APCA-API-SECRET-KEY': Deno.env.get('BROKER_SECRET') || '',
+        'APCA-API-KEY-ID': key,
+        'APCA-API-SECRET-KEY': secret,
       },
     },
   );
