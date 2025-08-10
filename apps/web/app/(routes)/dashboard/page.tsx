@@ -14,39 +14,53 @@ export default function Page() {
   const client = supabase();
   const [pnl, setPnl] = useState<number | null>(null);
   const [openTrades, setOpenTrades] = useState<Trade[]>([]);
-  const [killMsg, setKillMsg] = useState('');
+  const [status, setStatus] = useState('');
 
   useEffect(() => {
     const load = async () => {
-      const { data: pnlData } = await client.rpc('portfolio_pnl').catch(() => ({ data: 0 }));
-      setPnl(typeof pnlData === 'number' ? pnlData : 0);
+      try {
+        const { data: pnlData } = await client.rpc('portfolio_pnl');
+        setPnl(typeof pnlData === 'number' ? pnlData : 0);
+      } catch {
+        setPnl(0);
+      }
 
       const { data: tradesData } = await client
         .from('trades')
         .select('id, symbol, side, qty')
         .eq('status', 'OPEN')
         .order('opened_at', { ascending: false });
+
       setOpenTrades(tradesData ?? []);
     };
     load();
   }, [client]);
 
   const triggerKillSwitch = async () => {
-    setKillMsg('Sending...');
+    setStatus('Executing...');
     try {
-      const res = await fetch('/api/kill-switch', { method: 'POST' });
-      setKillMsg(res.ok ? 'Kill switch triggered' : 'Failed to send');
-    } catch {
-      setKillMsg('Failed to send');
+      // Try Supabase Edge Function first
+      const { error } = await client.functions.invoke('kill-switch', { body: {} });
+      if (error) {
+        // Fallback to API route if the function isn't configured
+        const res = await fetch('/api/kill-switch', { method: 'POST' });
+        setStatus(res.ok ? 'Kill switch triggered' : 'Failed to trigger kill switch');
+      } else {
+        setStatus('Kill switch activated');
+      }
+    } catch (e: any) {
+      setStatus(`Error: ${e?.message ?? 'Unknown error'}`);
     }
   };
 
   return (
     <div>
       <h2>Dashboard</h2>
+
       <div style={{ marginBottom: 16 }}>
         <strong>PnL:</strong> {pnl ?? '...'}
       </div>
+
       <div style={{ marginBottom: 16 }}>
         <h3>Open Trades</h3>
         {openTrades.length === 0 && <p>No open trades.</p>}
@@ -58,9 +72,9 @@ export default function Page() {
           ))}
         </ul>
       </div>
+
       <button onClick={triggerKillSwitch}>Kill Switch</button>
-      {killMsg && <p>{killMsg}</p>}
+      {status && <p>{status}</p>}
     </div>
   );
 }
-

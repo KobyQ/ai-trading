@@ -1,3 +1,6 @@
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { insertAuditLog } from "../core/audit.ts";
+
 export function makeClientOrderId(tradeId: string, n=1){
   return `${tradeId}-${n}`;
 }
@@ -8,11 +11,21 @@ export interface OrderRequest {
   limitPrice?: number; stopPrice?: number; tif?: 'day'|'ioc'|'fok';
 }
 
+import { getBrokerCredentials } from "../azure/keyVault.ts";
+let credsPromise: Promise<{ key: string; secret: string }> | null = null;
+async function creds(){
+  if(!credsPromise){
+    credsPromise = getBrokerCredentials();
+  }
+  return credsPromise;
+}
+
 async function alpacaFetch(path: string, opts: RequestInit){
   const base = process.env.BROKER_BASE_URL || 'https://paper-api.alpaca.markets';
+  const { key, secret } = await creds();
   const headers = {
-    'APCA-API-KEY-ID': process.env.BROKER_KEY || '',
-    'APCA-API-SECRET-KEY': process.env.BROKER_SECRET || '',
+    'APCA-API-KEY-ID': key,
+    'APCA-API-SECRET-KEY': secret,
     ...(opts.headers || {})
   } as Record<string, string>;
   const res = await fetch(`${base}${path}`, { ...opts, headers });
@@ -23,8 +36,26 @@ async function alpacaFetch(path: string, opts: RequestInit){
   return res.json();
 }
 
-export async function placePaperOrder(order: OrderRequest){
-  return alpacaFetch('/v2/orders', {
+export async function placePaperOrder(
+  order: OrderRequest,
+  supabase?: SupabaseClient,
+){
+  const client = supabase || (() => {
+    const url = process.env.SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    return url && key ? createClient(url, key) : undefined;
+  })();
+
+  if (client) {
+    await insertAuditLog(client, {
+      actor_type: 'SYSTEM',
+      action: 'PLACE_ORDER',
+      entity_type: 'order',
+      payload_json: order,
+    });
+  }
+
+  const res = await alpacaFetch('/v2/orders', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -37,6 +68,16 @@ export async function placePaperOrder(order: OrderRequest){
       stop_price: order.stopPrice,
     })
   });
+
+  if (client) {
+    await insertAuditLog(client, {
+      actor_type: 'SYSTEM',
+      action: 'ORDER_RESPONSE',
+      entity_type: 'order',
+      payload_json: res,
+    });
+  }
+  return res;
 }
 
 export interface Bar {
@@ -45,10 +86,11 @@ export interface Bar {
 
 export async function fetchPaperBars(symbol: string, timeframe='1D', limit=100): Promise<Bar[]>{
   const base = process.env.BROKER_DATA_URL || 'https://data.alpaca.markets';
+  const { key, secret } = await creds();
   const res = await fetch(`${base}/v2/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`, {
     headers: {
-      'APCA-API-KEY-ID': process.env.BROKER_KEY || '',
-      'APCA-API-SECRET-KEY': process.env.BROKER_SECRET || ''
+      'APCA-API-KEY-ID': key,
+      'APCA-API-SECRET-KEY': secret
     }
   });
   if (!res.ok){
