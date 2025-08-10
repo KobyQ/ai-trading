@@ -76,11 +76,16 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ ok: false, error: tradeErr.message }, { status: 500 });
   }
 
+  await client
+    .from('trade_opportunities')
+    .update({ status: 'APPROVED' })
+    .eq('id', params.id);
+
   await insertAuditLog(client, {
     actor_type: 'SYSTEM',
-    action: 'APPROVE_TRADE',
-    entity_type: 'trade',
-    entity_id: trade.id,
+    action: 'APPROVE_OPPORTUNITY',
+    entity_type: 'opportunity',
+    entity_id: params.id,
     payload_json: {
       qty,
       allowedQty,
@@ -90,11 +95,6 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       weekRiskUSD,
     },
   });
-
-  await client
-    .from('trade_opportunities')
-    .update({ status: 'APPROVED' })
-    .eq('id', params.id);
 
   try {
     await placeAndTrackOrder({
