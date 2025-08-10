@@ -48,8 +48,15 @@
      supabase functions deploy monitor-open-trades
      ```
 
-5. **Cron**  
-   - Configure Supabase Scheduler/pg_cron for daily/hourly research and per-minute monitoring (see SQL comments at top of migration).
+5. **Cron**
+   - Daily research: `30 13 * * 1-5` (60 min before U.S. market open)
+   - Optional hourly research: `0 * * * *` calls `rpc_start_research('1h')`
+   - If jobs already exist, re-run the migration or unschedule/reschedule manually:
+     ```sql
+     select cron.unschedule('daily_research');
+     select cron.schedule('daily_research', '30 13 * * 1-5', $$ select rpc_start_research('1d'); $$);
+     select cron.schedule('hourly_research', '0 * * * *', $$ select rpc_start_research('1h'); $$); -- optional
+     ```
 
 ## Notes
 - Orders are **paper** by default (stubbed broker). Broker credentials are loaded from Azure Key Vault and rotated quarterly.

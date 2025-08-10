@@ -4,11 +4,18 @@
 -- Ensure pg_cron extension is available
 create extension if not exists pg_cron;
 
--- Run daily research roughly 90 minutes before the U.S. market opens
+-- Run daily research roughly 60 minutes before the U.S. market opens
 select cron.schedule(
   'daily_research',
-  '0 13 * * 1-5',
+  '30 13 * * 1-5',
   $$ select rpc_start_research('1d'); $$
+);
+
+-- Optional: run hourly research at the top of each hour
+select cron.schedule(
+  'hourly_research',
+  '0 * * * *',
+  $$ select rpc_start_research('1h'); $$
 );
 
 -- Monitor open trades during the regular session (14:30-21:00 GMT)
