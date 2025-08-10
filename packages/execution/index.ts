@@ -1,3 +1,5 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
+
 export function makeClientOrderId(tradeId: string, n=1){
   return `${tradeId}-${n}`;
 }
@@ -6,6 +8,7 @@ export interface OrderRequest {
   symbol: string; side: 'buy'|'sell'; qty: number;
   type: 'market'|'limit'|'stop'|'stop_limit';
   limitPrice?: number; stopPrice?: number; tif?: 'day'|'ioc'|'fok';
+  clientOrderId?: string;
 }
 
 async function alpacaFetch(path: string, opts: RequestInit){
@@ -35,8 +38,84 @@ export async function placePaperOrder(order: OrderRequest){
       time_in_force: order.tif || 'day',
       limit_price: order.limitPrice,
       stop_price: order.stopPrice,
+      client_order_id: order.clientOrderId,
     })
   });
+}
+
+export interface TrackedOrderRequest extends OrderRequest {
+  tradeId: string;
+  supabase: SupabaseClient;
+  n?: number;
+}
+
+export async function placeAndTrackOrder(req: TrackedOrderRequest){
+  const clientOrderId = req.clientOrderId || makeClientOrderId(req.tradeId, req.n);
+  const orderRes = await placePaperOrder({ ...req, clientOrderId });
+
+  const { data: orderRow } = await req.supabase
+    .from('orders')
+    .insert({
+      trade_id: req.tradeId,
+      broker: 'PAPER',
+      client_order_id: clientOrderId,
+      type: req.type,
+      side: req.side,
+      qty: req.qty,
+      status: (orderRes.status || 'new').toUpperCase(),
+      raw_request: {
+        symbol: req.symbol,
+        side: req.side,
+        qty: req.qty,
+        type: req.type,
+        time_in_force: req.tif || 'day',
+        limit_price: req.limitPrice,
+        stop_price: req.stopPrice,
+        client_order_id: clientOrderId,
+      },
+      raw_response: orderRes,
+    })
+    .select('id')
+    .single();
+
+  let filledQty = 0;
+  let status = orderRes.status as string;
+  let last = orderRes;
+  let loops = 0;
+  while (status !== 'filled' && status !== 'canceled' && loops < 10) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const upd = await alpacaFetch(`/v2/orders/${orderRes.id}`, { method: 'GET' });
+    status = upd.status;
+    const newFilled = Number(upd.filled_qty || 0);
+    if (newFilled > filledQty) {
+      const diff = newFilled - filledQty;
+      await req.supabase.from('executions').insert({
+        order_id: orderRow.id,
+        price: Number(upd.filled_avg_price),
+        qty: diff,
+        raw_fill: upd,
+      });
+      filledQty = newFilled;
+    }
+    last = upd;
+    loops++;
+  }
+
+  if (filledQty < req.qty && status !== 'canceled') {
+    await alpacaFetch(`/v2/orders/${orderRes.id}`, { method: 'DELETE' }).catch(() => {});
+    status = 'canceled';
+    last.status = status;
+  }
+
+  await req.supabase
+    .from('orders')
+    .update({
+      status: status.toUpperCase(),
+      price: filledQty ? Number(last.filled_avg_price) : undefined,
+    })
+    .eq('id', orderRow.id);
+
+  return { orderId: orderRow.id, clientOrderId, filledQty, status };
 }
 
 export interface Bar {
