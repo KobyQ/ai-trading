@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@lib/supabase';
-import { makeClientOrderId } from '@execution/index';
+import { placeAndTrackOrder } from '@execution/index';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const idKey = req.headers.get('Idempotency-Key');
@@ -46,16 +46,23 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ ok: false, error: tradeErr.message }, { status: 500 });
   }
 
-  const clientOrderId = makeClientOrderId(trade.id);
-  await client.from('orders').insert({
-    trade_id: trade.id,
-    broker: 'PAPER',
-    client_order_id: clientOrderId,
-    type: 'market',
-    side: opp.side === 'LONG' ? 'buy' : 'sell',
-    qty,
-    status: 'FILLED',
-  });
+  await client
+    .from('trade_opportunities')
+    .update({ status: 'APPROVED' })
+    .eq('id', params.id);
+
+  try {
+    await placeAndTrackOrder({
+      tradeId: trade.id,
+      symbol: opp.symbol,
+      side: opp.side === 'LONG' ? 'buy' : 'sell',
+      qty,
+      type: 'market',
+      supabase: client,
+    });
+  } catch (err: any) {
+    return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
+  }
 
   await client
     .from('trade_opportunities')
