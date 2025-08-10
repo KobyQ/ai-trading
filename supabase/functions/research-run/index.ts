@@ -11,6 +11,7 @@ async function generateAnalysis(
 ) {
   const baseSummary =
     `Regime ${regime}; SMA20 ${smaVal.toFixed(2)}, RSI14 ${rsiVal.toFixed(2)}`;
+
   const azureEndpoint = Deno.env.get("AZURE_OPENAI_ENDPOINT");
   const azureKey = Deno.env.get("AZURE_OPENAI_API_KEY");
   const azureDeployment =
@@ -21,6 +22,7 @@ async function generateAnalysis(
   const openaiKey = Deno.env.get("OPENAI_API_KEY");
 
   try {
+    // Prefer Azure OpenAI if configured
     if (azureEndpoint && azureKey && azureDeployment) {
       const prompt =
         `You are a trading assistant. Given the following data for ${symbol}: ` +
@@ -39,8 +41,7 @@ async function generateAnalysis(
             messages: [
               {
                 role: "system",
-                content:
-                  "You are a helpful investment research assistant.",
+                content: "You are a helpful investment research assistant.",
               },
               { role: "user", content: prompt },
             ],
@@ -52,13 +53,20 @@ async function generateAnalysis(
       const json = await res.json();
       const content = json.choices?.[0]?.message?.content;
       if (content) {
-        const parsed = JSON.parse(content);
-        return {
-          summary: parsed.summary ?? baseSummary,
-          risks: parsed.risks ?? "High volatility",
-        };
+        try {
+          const parsed = JSON.parse(content);
+          return {
+            summary: parsed.summary ?? baseSummary,
+            risks: parsed.risks ?? "High volatility",
+          };
+        } catch {
+          // Fall through to OpenAI/plain parsing
+        }
       }
-    } else if (openaiKey) {
+    }
+
+    // Fall back to OpenAI if available
+    if (openaiKey) {
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -88,8 +96,9 @@ async function generateAnalysis(
       };
     }
   } catch (_) {
-    // ignore errors
+    // ignore errors and fall through to baseline
   }
+
   return { summary: baseSummary, risks: "High volatility" };
 }
 
