@@ -9,7 +9,8 @@ async function generateAnalysis(
   rsiVal: number,
   regime: string,
 ) {
-  const baseSummary = `Regime ${regime}; SMA20 ${smaVal.toFixed(2)}, RSI14 ${rsiVal.toFixed(2)}`;
+  const baseSummary =
+    `Regime ${regime}; SMA20 ${smaVal.toFixed(2)}, RSI14 ${rsiVal.toFixed(2)}`;
   const azureEndpoint = Deno.env.get("AZURE_OPENAI_ENDPOINT");
   const azureKey = Deno.env.get("AZURE_OPENAI_API_KEY");
   const azureDeployment =
@@ -17,43 +18,73 @@ async function generateAnalysis(
     Deno.env.get("AZURE_OPENAI_DEPLOYMENT_ID");
   const azureApiVersion =
     Deno.env.get("AZURE_OPENAI_API_VERSION") ?? "2023-07-01-preview";
-  if (!azureEndpoint || !azureKey || !azureDeployment) {
-    return { summary: baseSummary, risks: "High volatility" };
-  }
+  const openaiKey = Deno.env.get("OPENAI_API_KEY");
+
   try {
-    const prompt =
-      `You are a trading assistant. Given the following data for ${symbol}: ` +
-      `Regime ${regime}; SMA20 ${smaVal.toFixed(2)}; RSI14 ${rsiVal.toFixed(2)}. ` +
-      `Provide a brief summary and highlight key risks. ` +
-      `Respond in JSON format with fields "summary" and "risks".`;
-    const res = await fetch(
-      `${azureEndpoint}/openai/deployments/${azureDeployment}/chat/completions?api-version=${azureApiVersion}`,
-      {
+    if (azureEndpoint && azureKey && azureDeployment) {
+      const prompt =
+        `You are a trading assistant. Given the following data for ${symbol}: ` +
+        `Regime ${regime}; SMA20 ${smaVal.toFixed(2)}; RSI14 ${rsiVal.toFixed(2)}. ` +
+        `Provide a brief summary and highlight key risks. ` +
+        `Respond in JSON format with fields "summary" and "risks".`;
+      const res = await fetch(
+        `${azureEndpoint}/openai/deployments/${azureDeployment}/chat/completions?api-version=${azureApiVersion}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "api-key": azureKey,
+          },
+          body: JSON.stringify({
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are a helpful investment research assistant.",
+              },
+              { role: "user", content: prompt },
+            ],
+            max_tokens: 200,
+            temperature: 0.2,
+          }),
+        },
+      );
+      const json = await res.json();
+      const content = json.choices?.[0]?.message?.content;
+      if (content) {
+        const parsed = JSON.parse(content);
+        return {
+          summary: parsed.summary ?? baseSummary,
+          risks: parsed.risks ?? "High volatility",
+        };
+      }
+    } else if (openaiKey) {
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
-          "content-type": "application/json",
-          "api-key": azureKey,
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${openaiKey}`,
         },
         body: JSON.stringify({
+          model: "gpt-4o-mini",
           messages: [
             {
-              role: "system",
-              content: "You are a helpful investment research assistant.",
+              role: "user",
+              content:
+                `Given the following market data for ${symbol}: Regime ${regime}, ` +
+                `SMA20 ${smaVal.toFixed(2)}, RSI14 ${rsiVal.toFixed(2)}. ` +
+                `Provide a short trading summary and key risks.`,
             },
-            { role: "user", content: prompt },
           ],
-          max_tokens: 200,
-          temperature: 0.2,
+          max_tokens: 120,
         }),
-      },
-    );
-    const json = await res.json();
-    const content = json.choices?.[0]?.message?.content;
-    if (content) {
-      const parsed = JSON.parse(content);
+      });
+      const json = await res.json();
+      const text = json.choices?.[0]?.message?.content ?? "";
+      const [summary, risks] = text.split("Risks:");
       return {
-        summary: parsed.summary ?? baseSummary,
-        risks: parsed.risks ?? "High volatility",
+        summary: summary?.trim() || baseSummary,
+        risks: risks?.trim() || "High volatility",
       };
     }
   } catch (_) {
@@ -63,10 +94,10 @@ async function generateAnalysis(
 }
 
 /**
- * Research run generates a simple trade opportunity for a given symbol.
+ * Research run generates simple trade opportunities for one or more symbols.
  *
  * Query parameters:
- * - `symbol`   Stock symbol (default AAPL)
+ * - `symbols`   Comma-separated stock symbols (default AAPL)
  * - `timeframe` 1D or 1H (default 1D)
  */
 serve(async (req) => {
