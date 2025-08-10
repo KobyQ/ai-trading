@@ -67,6 +67,7 @@ serve(async (_req) => {
   for (const t of trades ?? []) {
     const price = await fetchLatestPrice(t.symbol);
     if (price == null || t.qty == null) continue;
+    let skipTrail = false;
 
     const opened = t.opened_at ? new Date(t.opened_at).getTime() : now;
 
@@ -93,6 +94,41 @@ serve(async (_req) => {
     const r = initial != null ? Math.abs(entry - initial) : null;
     const pnl = (price - entry) * t.qty * sideMult;
     const rMultiple = r ? ((price - entry) * sideMult) / r : 0;
+
+    const { data: req } = await supabase
+      .from("profit_take_requests")
+      .select("id, expires_at")
+      .eq("trade_id", t.id)
+      .eq("status", "PENDING")
+      .maybeSingle();
+
+    if (req?.expires_at && new Date(req.expires_at).getTime() <= now) {
+      if (r && initial != null) {
+        const next = lastLevel + 0.5;
+        const newStop = trailStop(entry, initial, next, t.side);
+        await supabase
+          .from("trades")
+          .update({
+            stop_params_json: {
+              ...(t.stop_params_json ?? {}),
+              stop: newStop,
+              initial,
+              trail_level: next,
+            },
+          })
+          .eq("id", t.id);
+      }
+      await supabase
+        .from("profit_take_requests")
+        .update({
+          status: "EXPIRED",
+          decision_at: new Date().toISOString(),
+        })
+        .eq("id", req.id);
+    }
+
+    const pending =
+      req?.expires_at && new Date(req.expires_at).getTime() > now;
 
     // Determine close reason(s)
     let reason = "";
@@ -123,7 +159,16 @@ serve(async (_req) => {
       ((t.side === "LONG" && price >= target) ||
         (t.side === "SHORT" && price <= target))
     ) {
-      reason = "TARGET";
+      if (!pending) {
+        await supabase
+          .from("profit_take_requests")
+          .insert({
+            trade_id: t.id,
+            price,
+            expires_at: new Date(now + 60_000).toISOString(),
+          });
+      }
+      skipTrail = true;
     }
 
     // Max loss: breach of -1R from initial stop
@@ -154,7 +199,7 @@ serve(async (_req) => {
     }
 
     // Trailing stop management
-    if (r && shouldTightenTrail(rMultiple, lastLevel)) {
+    if (!skipTrail && r && shouldTightenTrail(rMultiple, lastLevel)) {
       const next = nextTrailLevel(rMultiple, lastLevel);
       if (next != null && initial != null) {
         const newStop = trailStop(entry, initial, next, t.side);
