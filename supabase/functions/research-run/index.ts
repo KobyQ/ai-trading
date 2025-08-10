@@ -3,42 +3,110 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { fetchPaperBars } from "../_shared/execution.ts";
 import { sma, rsi, detectRegime } from "../_shared/strategy.ts";
 
-async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, regime: string) {
-  const key = Deno.env.get("OPENAI_API_KEY");
-  const baseSummary = `Regime ${regime}; SMA20 ${smaVal.toFixed(2)}, RSI14 ${rsiVal.toFixed(2)}`;
-  if (!key) {
-    return { summary: baseSummary, risks: "High volatility" };
-  }
+async function generateAnalysis(
+  symbol: string,
+  smaVal: number,
+  rsiVal: number,
+  regime: string,
+) {
+  const baseSummary =
+    `Regime ${regime}; SMA20 ${smaVal.toFixed(2)}, RSI14 ${rsiVal.toFixed(2)}`;
+
+  const azureEndpoint = Deno.env.get("AZURE_OPENAI_ENDPOINT");
+  const azureKey = Deno.env.get("AZURE_OPENAI_API_KEY");
+  const azureDeployment =
+    Deno.env.get("AZURE_OPENAI_DEPLOYMENT") ??
+    Deno.env.get("AZURE_OPENAI_DEPLOYMENT_ID");
+  const azureApiVersion =
+    Deno.env.get("AZURE_OPENAI_API_VERSION") ?? "2023-07-01-preview";
+  const openaiKey = Deno.env.get("OPENAI_API_KEY");
+
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [{
-          role: "user",
-          content: `Given the following market data for ${symbol}: Regime ${regime}, SMA20 ${smaVal.toFixed(2)}, RSI14 ${rsiVal.toFixed(2)}. Provide a short trading summary and key risks.`,
-        }],
-        max_tokens: 120,
-      }),
-    });
-    const json = await res.json();
-    const text = json.choices?.[0]?.message?.content ?? "";
-    const [summary, risks] = text.split("Risks:");
-    return { summary: summary?.trim() || baseSummary, risks: risks?.trim() || "High volatility" };
+    // Prefer Azure OpenAI if configured
+    if (azureEndpoint && azureKey && azureDeployment) {
+      const prompt =
+        `You are a trading assistant. Given the following data for ${symbol}: ` +
+        `Regime ${regime}; SMA20 ${smaVal.toFixed(2)}; RSI14 ${rsiVal.toFixed(2)}. ` +
+        `Provide a brief summary and highlight key risks. ` +
+        `Respond in JSON format with fields "summary" and "risks".`;
+      const res = await fetch(
+        `${azureEndpoint}/openai/deployments/${azureDeployment}/chat/completions?api-version=${azureApiVersion}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "api-key": azureKey,
+          },
+          body: JSON.stringify({
+            messages: [
+              {
+                role: "system",
+                content: "You are a helpful investment research assistant.",
+              },
+              { role: "user", content: prompt },
+            ],
+            max_tokens: 200,
+            temperature: 0.2,
+          }),
+        },
+      );
+      const json = await res.json();
+      const content = json.choices?.[0]?.message?.content;
+      if (content) {
+        try {
+          const parsed = JSON.parse(content);
+          return {
+            summary: parsed.summary ?? baseSummary,
+            risks: parsed.risks ?? "High volatility",
+          };
+        } catch {
+          // Fall through to OpenAI/plain parsing
+        }
+      }
+    }
+
+    // Fall back to OpenAI if available
+    if (openaiKey) {
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${openaiKey}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "user",
+              content:
+                `Given the following market data for ${symbol}: Regime ${regime}, ` +
+                `SMA20 ${smaVal.toFixed(2)}, RSI14 ${rsiVal.toFixed(2)}. ` +
+                `Provide a short trading summary and key risks.`,
+            },
+          ],
+          max_tokens: 120,
+        }),
+      });
+      const json = await res.json();
+      const text = json.choices?.[0]?.message?.content ?? "";
+      const [summary, risks] = text.split("Risks:");
+      return {
+        summary: summary?.trim() || baseSummary,
+        risks: risks?.trim() || "High volatility",
+      };
+    }
   } catch (_) {
-    return { summary: baseSummary, risks: "High volatility" };
+    // ignore errors and fall through to baseline
   }
+
+  return { summary: baseSummary, risks: "High volatility" };
 }
 
 /**
- * Research run generates a simple trade opportunity for a given symbol.
+ * Research run generates simple trade opportunities for one or more symbols.
  *
  * Query parameters:
- * - `symbol`   Stock symbol (default AAPL)
+ * - `symbols`   Comma-separated stock symbols (default AAPL)
  * - `timeframe` 1D or 1H (default 1D)
  */
 serve(async (req) => {
