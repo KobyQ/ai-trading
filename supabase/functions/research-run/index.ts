@@ -3,6 +3,7 @@ import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-
 import { fetchPaperBars, Bar } from "../_shared/execution.ts";
 import { sma, rsi, detectRegime } from "../_shared/strategy.ts";
 import { insertAuditLog } from "../_shared/audit.ts";
+import { netEdge, transactionCost, slippage } from "../../../packages/strategy/index.ts";
 
 async function hashBar(b: Bar) {
   const str = `${b.t}|${b.o}|${b.h}|${b.l}|${b.c}|${b.v}`;
@@ -203,6 +204,18 @@ serve(async (req) => {
       const regime = detectRegime(closes);
       const last = bars[bars.length - 1];
 
+      const qty = 1;
+      const commission = 0.01;
+      const slippageBps = 5;
+      const grossEdge = last.h - last.c;
+      const txCost = transactionCost(qty, commission);
+      const slip = slippage(last.c, qty, slippageBps);
+      const net = netEdge(grossEdge, last.c, qty, commission, slippageBps);
+      const expectedReturn = net / last.c;
+      const confidence = grossEdge > 0
+        ? Math.max(0, Math.min(1, net / grossEdge))
+        : 0;
+
       const ai = await generateAnalysis(
         symbol,
         sma20.at(-1) ?? 0,
@@ -216,12 +229,17 @@ serve(async (req) => {
           symbol,
           side: "LONG",
           timeframe: timeframe.toLowerCase(),
-          entry_plan_json: { price: last.c },
+          entry_plan_json: {
+            price: last.c,
+            transaction_cost: txCost,
+            slippage: slip,
+            net_edge: net,
+          },
           stop_plan_json: { stop: last.l },
           take_profit_json: { tp: last.h },
           risk_summary: `RSI ${rsi14.at(-1)?.toFixed(2)}`,
-          expected_return: 1,
-          confidence: 0.5,
+          expected_return: expectedReturn,
+          confidence,
           ai_summary: ai.summary,
           ai_risks: ai.risks,
           model_id: modelId,
