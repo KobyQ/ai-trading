@@ -149,14 +149,6 @@ export async function placeAndTrackOrder(req: TrackedOrderRequest) {
     loops++;
   }
 
-  if (filledQty < req.qty && status !== 'canceled') {
-    await alpacaFetch(`/orders/${orderRes.id}`, { method: 'DELETE' }).catch(
-      () => {},
-    );
-    status = 'canceled';
-    last.status = status;
-  }
-
   await req.supabase
     .from('orders')
     .update({
