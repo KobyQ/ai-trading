@@ -45,7 +45,7 @@ export async function placePaperOrder(
     });
   }
 
-  const res = await alpacaFetch('/v2/orders', {
+  const res = await alpacaFetch('/orders', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -77,7 +77,7 @@ export interface Bar {
 export async function fetchPaperBars(symbol: string, timeframe='1D', limit=100): Promise<Bar[]>{
   const base = 'https://data.alpaca.markets/v2';
   const { key, secret } = await creds();
-  const res = await fetch(`${base}/v2/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`, {
+  const res = await fetch(`${base}/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`, {
     headers: {
       'APCA-API-KEY-ID': key,
       'APCA-API-SECRET-KEY': secret

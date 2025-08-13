@@ -1,6 +1,16 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { insertAuditLog } from "../core/audit.ts";
 
+function getEnv(name: string): string | undefined {
+  if (typeof Deno !== "undefined" && typeof Deno.env?.get === "function") {
+    return Deno.env.get(name) ?? undefined;
+  }
+  if (typeof process !== "undefined") {
+    return process.env[name];
+  }
+  return undefined;
+}
+
 export function makeClientOrderId(tradeId: string, n = 1) {
   return `${tradeId}-${n}`;
 }
@@ -38,8 +48,8 @@ export async function placePaperOrder(
   const client =
     supabase ||
     (() => {
-      const url = Deno.env.get('SUPABASE_URL');
-      const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+      const url = getEnv('SUPABASE_URL');
+      const key = getEnv('SUPABASE_SERVICE_ROLE_KEY');
       return url && key ? createClient(url, key) : undefined;
     })();
 
@@ -52,7 +62,7 @@ export async function placePaperOrder(
     });
   }
 
-  const res = await alpacaFetch('/v2/orders', {
+  const res = await alpacaFetch('/orders', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -120,7 +130,7 @@ export async function placeAndTrackOrder(req: TrackedOrderRequest) {
   let loops = 0;
   while (status !== 'filled' && status !== 'canceled' && loops < 10) {
     await new Promise((r) => setTimeout(r, 1000));
-    const upd = await alpacaFetch(`/v2/orders/${orderRes.id}`, {
+    const upd = await alpacaFetch(`/orders/${orderRes.id}`, {
       method: 'GET',
     });
     status = upd.status;
@@ -140,7 +150,7 @@ export async function placeAndTrackOrder(req: TrackedOrderRequest) {
   }
 
   if (filledQty < req.qty && status !== 'canceled') {
-    await alpacaFetch(`/v2/orders/${orderRes.id}`, { method: 'DELETE' }).catch(
+    await alpacaFetch(`/orders/${orderRes.id}`, { method: 'DELETE' }).catch(
       () => {},
     );
     status = 'canceled';
@@ -175,7 +185,7 @@ export async function fetchPaperBars(
   const base = 'https://data.alpaca.markets/v2';
   const { key, secret } = await creds();
   const res = await fetch(
-    `${base}/v2/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`,
+    `${base}/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`,
     {
       headers: {
         'APCA-API-KEY-ID': key,

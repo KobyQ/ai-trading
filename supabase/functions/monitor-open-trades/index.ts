@@ -10,7 +10,7 @@ import {
 
 async function fetchLatestPrice(symbol: string) {
   const base = "https://data.alpaca.markets/v2";
-  const res = await fetch(`${base}/v2/stocks/${symbol}/trades/latest`, {
+  const res = await fetch(`${base}/stocks/${symbol}/trades/latest`, {
     headers: {
       "APCA-API-KEY-ID": Deno.env.get("BROKER_KEY") ?? "",
       "APCA-API-SECRET-KEY": Deno.env.get("BROKER_SECRET") ?? "",

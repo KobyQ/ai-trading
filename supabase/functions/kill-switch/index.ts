@@ -31,13 +31,13 @@ serve(async (_req) => {
   let ordersCanceled = 0;
   let positionsClosed = 0;
   try {
-    await alpacaFetch('/v2/orders', { method: 'DELETE' });
+    await alpacaFetch('/orders', { method: 'DELETE' });
     ordersCanceled = 1;
   } catch (e) {
     console.error(e);
   }
   try {
-    await alpacaFetch('/v2/positions', { method: 'DELETE' });
+    await alpacaFetch('/positions', { method: 'DELETE' });
     positionsClosed = 1;
   } catch (e) {
     console.error(e);
