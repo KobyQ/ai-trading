@@ -1,5 +1,5 @@
-import { DefaultAzureCredential } from "npm:@azure/identity";
-import { SecretClient } from "npm:@azure/keyvault-secrets";
+import { DefaultAzureCredential } from "@azure/identity";
+import { SecretClient } from "@azure/keyvault-secrets";
 
 const vaultUrl = Deno.env.get("AZURE_KEY_VAULT_URL");
 if (!vaultUrl) {

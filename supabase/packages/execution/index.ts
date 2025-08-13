@@ -21,7 +21,7 @@ async function creds(){
 }
 
 async function alpacaFetch(path: string, opts: RequestInit){
-  const base = process.env.BROKER_BASE_URL || 'https://paper-api.alpaca.markets';
+  const base = process.env.BROKER_BASE_URL || 'https://paper-api.alpaca.markets/v2';
   const { key, secret } = await creds();
   const headers = {
     'APCA-API-KEY-ID': key,

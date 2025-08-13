@@ -1,5 +1,5 @@
-import { SecretClient } from "npm:@azure/keyvault-secrets";
-import { DefaultAzureCredential } from "npm:@azure/identity";
+import { SecretClient } from "@azure/keyvault-secrets";
+import { DefaultAzureCredential } from "@azure/identity";
 
 export const cron = "0 0 1 */3 *"; // run quarterly
 

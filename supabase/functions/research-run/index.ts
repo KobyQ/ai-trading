@@ -1,5 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { fetchPaperBars, Bar } from "../_shared/execution.ts";
 import { sma, rsi, detectRegime } from "../_shared/strategy.ts";
 import { insertAuditLog } from "../_shared/audit.ts";

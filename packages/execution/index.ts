@@ -1,4 +1,4 @@
-import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { insertAuditLog } from "../core/audit.ts";
 import { getBrokerCredentials } from "../azure/keyVault.ts";
 
@@ -37,7 +37,7 @@ async function creds() {
 
 async function alpacaFetch(path: string, opts: RequestInit) {
   const base =
-    Deno.env.get('BROKER_BASE_URL') || 'https://paper-api.alpaca.markets';
+    Deno.env.get('BROKER_BASE_URL') || 'https://paper-api.alpaca.markets/v2';
   const { key, secret } = await creds();
   const headers = {
     'APCA-API-KEY-ID': key,

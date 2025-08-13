@@ -1,8 +1,8 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "@supabase/supabase-js";
 
 async function alpacaFetch(path: string, opts: RequestInit = {}) {
-  const base = Deno.env.get('BROKER_BASE_URL') ?? 'https://paper-api.alpaca.markets';
+  const base = Deno.env.get('BROKER_BASE_URL') ?? 'https://paper-api.alpaca.markets/v2';
   const headers = {
     'APCA-API-KEY-ID': Deno.env.get('BROKER_KEY') ?? '',
     'APCA-API-SECRET-KEY': Deno.env.get('BROKER_SECRET') ?? '',
