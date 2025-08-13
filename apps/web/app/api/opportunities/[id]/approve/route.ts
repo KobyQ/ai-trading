@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabase-server';
+import { supabaseServer } from '@lib/supabase-server';
 import { placeAndTrackOrder } from '@execution/index';
 import { sizeWithRiskCaps } from '@risk/index';
 import { insertAuditLog } from '@core/audit';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const idKey = req.headers.get('Idempotency-Key');
-  const client = supabase;
+  const client = supabaseServer();
 
   if (idKey) {
     const { data: existing } = await client

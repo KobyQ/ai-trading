@@ -9,7 +9,7 @@ import {
 } from "../../../packages/risk/index.ts";
 
 async function fetchLatestPrice(symbol: string) {
-  const base = Deno.env.get("BROKER_DATA_URL") ?? "https://data.alpaca.markets";
+  const base = "https://data.alpaca.markets/v2";
   const res = await fetch(`${base}/v2/stocks/${symbol}/trades/latest`, {
     headers: {
       "APCA-API-KEY-ID": Deno.env.get("BROKER_KEY") ?? "",

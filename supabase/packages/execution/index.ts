@@ -75,7 +75,7 @@ export interface Bar {
 }
 
 export async function fetchPaperBars(symbol: string, timeframe='1D', limit=100): Promise<Bar[]>{
-  const base = process.env.BROKER_DATA_URL || 'https://data.alpaca.markets';
+  const base = 'https://data.alpaca.markets/v2';
   const { key, secret } = await creds();
   const res = await fetch(`${base}/v2/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`, {
     headers: {

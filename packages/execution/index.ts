@@ -17,8 +17,7 @@ export interface OrderRequest {
 }
 
 async function alpacaFetch(path: string, opts: RequestInit) {
-  const base =
-    Deno.env.get('BROKER_BASE_URL') || 'https://paper-api.alpaca.markets/v2';
+  const base = 'https://paper-api.alpaca.markets/v2';
   const headers = {
     'APCA-API-KEY-ID': process.env.BROKER_KEY,
     'APCA-API-SECRET-KEY': process.env.BROKER_SECRET,
@@ -173,8 +172,7 @@ export async function fetchPaperBars(
   timeframe = '1D',
   limit = 100,
 ): Promise<Bar[]> {
-  const base =
-    Deno.env.get('BROKER_DATA_URL') || 'https://data.alpaca.markets';
+  const base = 'https://data.alpaca.markets/v2';
   const { key, secret } = await creds();
   const res = await fetch(
     `${base}/v2/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`,
