@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@lib/supabase';
+import { supabaseServer } from '@/lib/supabase-server';
 import { placeAndTrackOrder } from '@execution/index';
 import { sizeWithRiskCaps } from '@risk/index';
 import { insertAuditLog } from '@core/audit';
