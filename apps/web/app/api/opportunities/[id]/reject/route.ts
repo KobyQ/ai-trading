@@ -3,7 +3,7 @@ import { supabase } from '@lib/supabase';
 import { insertAuditLog } from '@core/audit';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  const client = supabase();
+  const client = supabase;
   const body = await req.json().catch(() => ({}));
   const reason: string | undefined = body.reason;
 

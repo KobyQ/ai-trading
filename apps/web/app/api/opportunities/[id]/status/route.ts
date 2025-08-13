@@ -10,7 +10,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ ok: false, error: 'invalid status' }, { status: 400 });
   }
 
-  const { error } = await supabase()
+  const { error } = await supabase
     .from('trade_opportunities')
     .update({ status })
     .eq('id', params.id);

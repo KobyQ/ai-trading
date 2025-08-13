@@ -6,7 +6,7 @@ import { insertAuditLog } from '@core/audit';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const idKey = req.headers.get('Idempotency-Key');
-  const client = supabase();
+  const client = supabase;
 
   if (idKey) {
     const { data: existing } = await client

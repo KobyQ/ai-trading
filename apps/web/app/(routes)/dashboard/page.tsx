@@ -11,7 +11,7 @@ type Trade = {
 };
 
 export default function Page() {
-  const client = supabase();
+  const client = supabase;
   const [pnl, setPnl] = useState<number | null>(null);
   const [openTrades, setOpenTrades] = useState<Trade[]>([]);
   const [status, setStatus] = useState('');

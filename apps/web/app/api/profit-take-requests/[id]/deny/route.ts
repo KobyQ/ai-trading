@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@lib/supabase';
 
 export async function POST(_req: NextRequest, { params }: { params: { id: string } }) {
-  const client = supabase();
+  const client = supabase;
   const { error } = await client
     .from('profit_take_requests')
     .update({ status: 'DENIED', decision_at: new Date().toISOString() })

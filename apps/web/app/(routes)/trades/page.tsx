@@ -12,7 +12,7 @@ type Trade = {
 };
 
 export default function Page() {
-  const client = supabase();
+  const client = supabase;
   const [trades, setTrades] = useState<Trade[]>([]);
 
   const load = async () => {

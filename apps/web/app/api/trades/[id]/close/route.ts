@@ -3,7 +3,7 @@ import { supabase } from '@lib/supabase';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const { reason } = await req.json().catch(() => ({ reason: 'MANUAL' }));
-  const client = supabase();
+  const client = supabase;
   const { error } = await client
     .from('trades')
     .update({

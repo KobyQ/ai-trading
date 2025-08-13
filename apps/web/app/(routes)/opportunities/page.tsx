@@ -11,7 +11,7 @@ type Opportunity = {
 };
 
 export default function Page() {
-  const client = supabase();
+  const client = supabase;
   const [opps, setOpps] = useState<Opportunity[]>([]);
   const [loading, setLoading] = useState(true);
 
