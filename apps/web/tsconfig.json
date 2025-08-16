@@ -30,6 +30,12 @@
       "@risk/*": [
         "../../packages/risk/*"
       ],
+      "@mra": [
+        "../../packages/mra/index.ts"
+      ],
+      "@mra/*": [
+        "../../packages/mra/*"
+      ],
       "@lib/*": [
         "./lib/*"
       ],
