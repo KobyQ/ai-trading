@@ -1,4 +1,3 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { fetchPaperBars, Bar } from "../_shared/execution.ts";
 import { sma, rsi, detectRegime } from "../_shared/strategy.ts";
@@ -77,6 +76,11 @@ async function generateAnalysis(
         `Regime ${regime}; SMA20 ${smaVal.toFixed(2)}; RSI14 ${rsiVal.toFixed(2)}. ` +
         `Provide a brief summary and highlight key risks. ` +
         `Respond in JSON format with fields "summary" and "risks".`;
+      console.log("Calling Azure OpenAI", {
+        endpoint: azureEndpoint,
+        deployment: azureDeployment,
+        symbol,
+      });
       const res = await fetch(
         `${azureEndpoint}/openai/deployments/${azureDeployment}/chat/completions?api-version=${azureApiVersion}`,
         {
@@ -98,6 +102,7 @@ async function generateAnalysis(
           }),
         },
       );
+      console.log("Azure OpenAI response status", res.status);
       const json = await res.json();
       const content = json.choices?.[0]?.message?.content;
       if (content) {
@@ -158,7 +163,7 @@ async function generateAnalysis(
  * - `model_id`  Optional model identifier (for audit)
  * - `model_version` Optional model version (for audit)
  */
-serve(async (req) => {
+Deno.serve(async (req) => {
   const { searchParams } = new URL(req.url);
   const timeframe = searchParams.get("timeframe") ?? "1D";
   const modelId = searchParams.get("model_id") ?? undefined;

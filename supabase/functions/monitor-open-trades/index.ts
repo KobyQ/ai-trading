@@ -1,4 +1,3 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "@supabase/supabase-js";
 import { insertAuditLog } from "../_shared/audit.ts";
 import {
@@ -26,7 +25,7 @@ async function fetchLatestPrice(symbol: string) {
  *
  * Checks TTL, stop/target hits, max loss (1R), risk % caps, and manages trailing stops.
  */
-serve(async (_req) => {
+Deno.serve(async (_req) => {
   const url = Deno.env.get("SUPABASE_URL");
   const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!url || !key) {
