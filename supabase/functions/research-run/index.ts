@@ -178,91 +178,93 @@ serve(async (req) => {
   const supabase = createClient(url, key);
 
   const results: { symbol: string; id: string }[] = [];
-  for (const symbol of symbols) {
-    try {
-      await insertAuditLog(supabase, {
-        actor_type: "SYSTEM",
-        action: "RESEARCH_RUN",
-        entity_type: "research",
-        payload_json: { symbol, timeframe, model_id: modelId, model_version: modelVersion },
-      });
-
-      const bars = await fetchPaperBars(symbol, timeframe);
-      if (!bars.length) continue;
-
-      await saveBars(supabase, symbol, timeframe, bars);
-      await insertAuditLog(supabase, {
-        actor_type: "SYSTEM",
-        action: "MARKET_DATA_SAVED",
-        entity_type: "market_data",
-        payload_json: { symbol, timeframe, count: bars.length },
-      });
-
-      const closes = bars.map((b) => b.c);
-      const sma20 = sma(closes, 20);
-      const rsi14 = rsi(closes, 14);
-      const regime = detectRegime(closes);
-      const last = bars[bars.length - 1];
-
-      const qty = 1;
-      const commission = 0.01;
-      const slippageBps = 5;
-      const grossEdge = last.h - last.c;
-      const txCost = transactionCost(qty, commission);
-      const slip = slippage(last.c, qty, slippageBps);
-      const net = netEdge(grossEdge, last.c, qty, commission, slippageBps);
-      const expectedReturn = net / last.c;
-      const confidence = grossEdge > 0
-        ? Math.max(0, Math.min(1, net / grossEdge))
-        : 0;
-
-      const ai = await generateAnalysis(
-        symbol,
-        sma20.at(-1) ?? 0,
-        rsi14.at(-1) ?? 0,
-        regime,
-      );
-
-      const { data, error } = await supabase
-        .from("trade_opportunities")
-        .insert({
-          symbol,
-          side: "LONG",
-          timeframe: timeframe.toLowerCase(),
-          entry_plan_json: {
-            price: last.c,
-            transaction_cost: txCost,
-            slippage: slip,
-            net_edge: net,
-          },
-          stop_plan_json: { stop: last.l },
-          take_profit_json: { tp: last.h },
-          risk_summary: `RSI ${rsi14.at(-1)?.toFixed(2)}`,
-          expected_return: expectedReturn,
-          confidence,
-          ai_summary: ai.summary,
-          ai_risks: ai.risks,
-          model_id: modelId,
-          model_version: modelVersion,
-        })
-        .select("id")
-        .single();
-
-      if (!error && data) {
-        results.push({ symbol, id: data.id });
-
+  await Promise.all(
+    symbols.map(async (symbol) => {
+      try {
         await insertAuditLog(supabase, {
           actor_type: "SYSTEM",
-          action: "OPPORTUNITY_CREATED",
-          entity_type: "trade_opportunity",
-          entity_id: data.id,
+          action: "RESEARCH_RUN",
+          entity_type: "research",
           payload_json: { symbol, timeframe, model_id: modelId, model_version: modelVersion },
         });
+
+        const bars = await fetchPaperBars(symbol, timeframe);
+        if (!bars.length) return;
+
+        await saveBars(supabase, symbol, timeframe, bars);
+        await insertAuditLog(supabase, {
+          actor_type: "SYSTEM",
+          action: "MARKET_DATA_SAVED",
+          entity_type: "market_data",
+          payload_json: { symbol, timeframe, count: bars.length },
+        });
+
+        const closes = bars.map((b) => b.c);
+        const sma20 = sma(closes, 20);
+        const rsi14 = rsi(closes, 14);
+        const regime = detectRegime(closes);
+        const last = bars[bars.length - 1];
+
+        const qty = 1;
+        const commission = 0.01;
+        const slippageBps = 5;
+        const grossEdge = last.h - last.c;
+        const txCost = transactionCost(qty, commission);
+        const slip = slippage(last.c, qty, slippageBps);
+        const net = netEdge(grossEdge, last.c, qty, commission, slippageBps);
+        const expectedReturn = net / last.c;
+        const confidence = grossEdge > 0
+          ? Math.max(0, Math.min(1, net / grossEdge))
+          : 0;
+
+        const ai = await generateAnalysis(
+          symbol,
+          sma20.at(-1) ?? 0,
+          rsi14.at(-1) ?? 0,
+          regime,
+        );
+
+        const { data, error } = await supabase
+          .from("trade_opportunities")
+          .insert({
+            symbol,
+            side: "LONG",
+            timeframe: timeframe.toLowerCase(),
+            entry_plan_json: {
+              price: last.c,
+              transaction_cost: txCost,
+              slippage: slip,
+              net_edge: net,
+            },
+            stop_plan_json: { stop: last.l },
+            take_profit_json: { tp: last.h },
+            risk_summary: `RSI ${rsi14.at(-1)?.toFixed(2)}`,
+            expected_return: expectedReturn,
+            confidence,
+            ai_summary: ai.summary,
+            ai_risks: ai.risks,
+            model_id: modelId,
+            model_version: modelVersion,
+          })
+          .select("id")
+          .single();
+
+        if (!error && data) {
+          results.push({ symbol, id: data.id });
+
+          await insertAuditLog(supabase, {
+            actor_type: "SYSTEM",
+            action: "OPPORTUNITY_CREATED",
+            entity_type: "trade_opportunity",
+            entity_id: data.id,
+            payload_json: { symbol, timeframe, model_id: modelId, model_version: modelVersion },
+          });
+        }
+      } catch (e) {
+        console.error("research-run failed for", symbol, e);
       }
-    } catch (_) {
-      continue;
-    }
-  }
+    }),
+  );
 
   return new Response(JSON.stringify({ ok: true, opportunities: results }), {
     headers: { "content-type": "application/json" },
