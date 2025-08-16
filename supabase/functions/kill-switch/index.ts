@@ -1,4 +1,3 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "@supabase/supabase-js";
 
 async function alpacaFetch(path: string, opts: RequestInit = {}) {
@@ -17,7 +16,7 @@ async function alpacaFetch(path: string, opts: RequestInit = {}) {
   return res.json();
 }
 
-serve(async (_req) => {
+Deno.serve(async (_req) => {
   const url = Deno.env.get('SUPABASE_URL');
   const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
   if (!url || !key) {
