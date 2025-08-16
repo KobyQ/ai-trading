@@ -17,23 +17,32 @@ export default function Page() {
   const [status, setStatus] = useState('');
 
   useEffect(() => {
+    let active = true;
     const load = async () => {
       try {
         const { data: pnlData } = await client.rpc('portfolio_pnl');
-        setPnl(typeof pnlData === 'number' ? pnlData : 0);
+        if (active) {
+          setPnl(typeof pnlData === 'number' ? pnlData : 0);
+        }
       } catch {
-        setPnl(0);
+        if (active) setPnl(0);
       }
 
-      const { data: tradesData } = await client
-        .from('trades')
-        .select('id, symbol, side, qty')
-        .eq('status', 'OPEN')
-        .order('opened_at', { ascending: false });
-
-      setOpenTrades(tradesData ?? []);
+      try {
+        const { data: tradesData } = await client
+          .from('trades')
+          .select('id, symbol, side, qty')
+          .eq('status', 'OPEN')
+          .order('opened_at', { ascending: false });
+        if (active) setOpenTrades(tradesData ?? []);
+      } catch {
+        if (active) setOpenTrades([]);
+      }
     };
     load();
+    return () => {
+      active = false;
+    };
   }, [client]);
 
   const triggerKillSwitch = async () => {
