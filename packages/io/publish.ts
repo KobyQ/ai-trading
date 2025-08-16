@@ -7,7 +7,9 @@ export async function publishTopN(
   opps: RankedOpportunity[],
 ) {
   if (!opps.length) return;
+
   const date = new Date().toISOString().slice(0, 10);
+
   try {
     const { error } = await client.from('trading_opportunities').insert(
       opps.map((o) => ({
