@@ -54,4 +54,14 @@ export default function Page() {
   }, [client]);
 
   const triggerKillSwitch = async () => {
-    setStatus('Execu
+    setStatus('Executing kill switch...');
+    try {
+      const res = await fetch('/api/kill-switch', { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setStatus('Kill switch triggered');
+    } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    setStatus(`Error: ${msg}`);
+  }
+};
+}

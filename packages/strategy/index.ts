@@ -1,4 +1,4 @@
-import { sizeWithRiskCaps } from '../risk';
+import { sizeWithRiskCaps } from "../risk/index.ts";
 
 export function sma(values: number[], period: number): number[] {
   const out: number[] = [];

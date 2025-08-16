@@ -169,13 +169,22 @@ export interface Bar {
   v: number;
 }
 
+async function getBrokerCreds() {
+  const key = getEnv('BROKER_KEY');
+  const secret = getEnv('BROKER_SECRET');
+  if (!key || !secret) {
+    throw new Error('Missing broker credentials');
+  }
+  return { key, secret };
+}
+
 export async function fetchPaperBars(
   symbol: string,
   timeframe = '1D',
   limit = 100,
 ): Promise<Bar[]> {
   const base = 'https://data.alpaca.markets/v2';
-  const { key, secret } = await creds();
+  const { key, secret } = await getBrokerCreds();
   const res = await fetch(
     `${base}/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`,
     {

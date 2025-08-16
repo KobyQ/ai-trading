@@ -119,7 +119,7 @@ supabase functions deploy monitor-open-trades
 Set secrets:
 
 ```bash
-supabase functions secrets set \
+supabase secrets set \
   AZURE_OPENAI_ENDPOINT="$AZURE_OPENAI_ENDPOINT" \
   AZURE_OPENAI_API_KEY="$AZURE_OPENAI_API_KEY" \
   AZURE_OPENAI_DEPLOYMENT="$AZURE_OPENAI_DEPLOYMENT" \
