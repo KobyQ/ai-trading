@@ -226,6 +226,3 @@ Add Vercel Cron (backup):
 * Trailing-stops tighten on milestones (+0.5R, +1R, …).
 * “Done” means: db migrations applied, functions deployed, `/opportunities` showing rows, approvals writing trades + audit logs, and schedules running daily/hourly.
 
----
-
-Would you like me to also **add a Makefile with shortcut commands** (e.g. `make dev`, `make deploy-fns`, `make run-research`) so setup is even smoother for you and teammates?
