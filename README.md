@@ -22,41 +22,49 @@
 /.github/workflows     # CI templates
 ```
 
-## Quick Start
+## Setup & Running
 
-1. **Install** (node 20+, pnpm recommended)
+Follow these steps to get a local environment and Supabase project ready.
+
+1. **Prerequisites**
+   - Install Node.js 20+ and the [PNPM](https://pnpm.io/) package manager.
+   - Install the [Supabase CLI](https://supabase.com/docs/guides/cli) to run migrations and deploy edge functions.
+
+2. **Install dependencies**
    ```bash
    pnpm install
    ```
 
-2. **Create .env files**  
-   - Copy `.env.example` to `.env` in `apps/web` and root and fill values.
+3. **Environment variables**
+   - Copy `.env.example` to `.env` in the repo root and populate broker creds, Azure OpenAI keys and optional Telegram tokens.
+   - In `apps/web/.env` set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+   - For edge functions (`supabase/functions/.env`) include `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` and any broker API settings.
 
-3. **Run Next.js**
+4. **Supabase project**
+   - Create a Supabase project and run SQL migrations from `supabase/migrations`.
+   - Apply row‑level security policies in `supabase/policies`.
+   - Enable TOTP MFA by setting `auth.mfa.totp.enroll_enabled=true` and `verify_enabled=true` in `supabase/config.toml`.
+
+5. **Deploy Edge Functions**
+   ```bash
+   supabase functions deploy research-run
+   supabase functions deploy monitor-open-trades
+   ```
+
+6. **Schedule jobs**
+   - Daily research: `30 13 * * 1-5` (60 min before U.S. market open).
+   - Optional hourly research: `0 * * * *` calling `rpc_start_research('1h')`.
+   - Update existing jobs with `cron.unschedule`/`cron.schedule` if needed.
+
+7. **Run the Next.js app**
    ```bash
    cd apps/web
    pnpm dev
    ```
 
-4. **Supabase**
-   - Create a Supabase project, run SQL from `supabase/migrations/0001_init.sql`
-   - Apply RLS policies from `supabase/policies`
-   - Enable TOTP-based MFA via `supabase/config.toml`
-   - Deploy functions:
-     ```bash
-     supabase functions deploy research-run
-     supabase functions deploy monitor-open-trades
-     ```
-
-5. **Cron**
-   - Daily research: `30 13 * * 1-5` (60 min before U.S. market open)
-   - Optional hourly research: `0 * * * *` calls `rpc_start_research('1h')`
-   - If jobs already exist, re-run the migration or unschedule/reschedule manually:
-     ```sql
-     select cron.unschedule('daily_research');
-     select cron.schedule('daily_research', '30 13 * * 1-5', $$ select rpc_start_research('1d'); $$);
-     select cron.schedule('hourly_research', '0 * * * *', $$ select rpc_start_research('1h'); $$); -- optional
-     ```
+8. **Optional services**
+   - Provide broker API keys or store them in Azure Key Vault referenced by `AZURE_KEY_VAULT_URL`.
+   - Deploy `kill-switch` or `rotate-broker-keys` functions and configure Telegram notifications if desired.
 
 ## Notes
 - Orders are **paper** by default (stubbed broker). Broker credentials are loaded from Azure Key Vault and rotated quarterly.
