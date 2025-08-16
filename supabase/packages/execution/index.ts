@@ -1,6 +1,16 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { insertAuditLog } from "../core/audit.ts";
 
+function getEnv(name: string): string | undefined {
+  if (typeof Deno !== "undefined" && typeof Deno.env?.get === "function") {
+    return Deno.env.get(name) ?? undefined;
+  }
+  if (typeof process !== "undefined") {
+    return process.env[name];
+  }
+  return undefined;
+}
+
 export function makeClientOrderId(tradeId: string, n=1){
   return `${tradeId}-${n}`;
 }
@@ -74,9 +84,18 @@ export interface Bar {
   t: string; o: number; h: number; l: number; c: number; v: number;
 }
 
+async function getBrokerCreds() {
+  const key = getEnv('BROKER_KEY');
+  const secret = getEnv('BROKER_SECRET');
+  if (!key || !secret) {
+    throw new Error('Missing broker credentials');
+  }
+  return { key, secret };
+}
+
 export async function fetchPaperBars(symbol: string, timeframe='1D', limit=100): Promise<Bar[]>{
   const base = 'https://data.alpaca.markets/v2';
-  const { key, secret } = await creds();
+  const { key, secret } = await getBrokerCreds();
   const res = await fetch(`${base}/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`, {
     headers: {
       'APCA-API-KEY-ID': key,
