@@ -3,6 +3,18 @@
     {
       "path": "/api/cron/research",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/mra/run?type=DAILY",
+      "schedule": "0 8 * * 1-5"
+    },
+    {
+      "path": "/api/mra/run?type=MIDDAY",
+      "schedule": "0 12 * * 1-5"
+    },
+    {
+      "path": "/api/mra/run?type=US_PREOPEN",
+      "schedule": "0 14 * * 1-5"
     }
   ]
 }
