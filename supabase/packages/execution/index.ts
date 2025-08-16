@@ -6,12 +6,12 @@ function getEnv(name: string): string | undefined {
     return Deno.env.get(name) ?? undefined;
   }
   if (typeof process !== "undefined") {
-    return process.env[name];
+    return (process as any).env?.[name];
   }
   return undefined;
 }
 
-export function makeClientOrderId(tradeId: string, n=1){
+export function makeClientOrderId(tradeId: string, n = 1) {
   return `${tradeId}-${n}`;
 }
 
@@ -21,19 +21,29 @@ export interface OrderRequest {
   limitPrice?: number; stopPrice?: number; tif?: 'day'|'ioc'|'fok';
 }
 
-async function alpacaFetch(path: string, opts: RequestInit){
-  const base = process.env.BROKER_BASE_URL || 'https://paper-api.alpaca.markets/v2';
+async function alpacaFetch(path: string, opts: RequestInit) {
+  const base =
+    getEnv("BROKER_BASE_URL") ?? "https://paper-api.alpaca.markets/v2";
   const headers = {
-    'APCA-API-KEY-ID': process.env.BROKER_KEY,
-    'APCA-API-SECRET-KEY': process.env.BROKER_SECRET,
-    ...(opts.headers || {})
+    "APCA-API-KEY-ID": getEnv("BROKER_KEY") ?? "",
+    "APCA-API-SECRET-KEY": getEnv("BROKER_SECRET") ?? "",
+    ...(opts.headers || {}),
   } as Record<string, string>;
   const res = await fetch(`${base}${path}`, { ...opts, headers });
-  if (!res.ok){
+  if (!res.ok) {
     const text = await res.text();
     throw new Error(`Alpaca error ${res.status}: ${text}`);
   }
   return res.json();
+}
+
+async function getBrokerCreds() {
+  const key = getEnv("BROKER_KEY");
+  const secret = getEnv("BROKER_SECRET");
+  if (!key || !secret) {
+    throw new Error("Missing broker credentials");
+  }
+  return { key, secret };
 }
 
 export async function placePaperOrder(
@@ -41,8 +51,8 @@ export async function placePaperOrder(
   supabase?: SupabaseClient,
 ){
   const client = supabase || (() => {
-    const url = process.env.SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const url = getEnv("SUPABASE_URL");
+    const key = getEnv("SUPABASE_SERVICE_ROLE_KEY");
     return url && key ? createClient(url, key) : undefined;
   })();
 
@@ -84,25 +94,23 @@ export interface Bar {
   t: string; o: number; h: number; l: number; c: number; v: number;
 }
 
-async function getBrokerCreds() {
-  const key = getEnv('BROKER_KEY');
-  const secret = getEnv('BROKER_SECRET');
-  if (!key || !secret) {
-    throw new Error('Missing broker credentials');
-  }
-  return { key, secret };
-}
-
-export async function fetchPaperBars(symbol: string, timeframe='1D', limit=100): Promise<Bar[]>{
-  const base = 'https://data.alpaca.markets/v2';
+export async function fetchPaperBars(
+  symbol: string,
+  timeframe = "1D",
+  limit = 100,
+): Promise<Bar[]> {
+  const base = "https://data.alpaca.markets/v2";
   const { key, secret } = await getBrokerCreds();
-  const res = await fetch(`${base}/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`, {
-    headers: {
-      'APCA-API-KEY-ID': key,
-      'APCA-API-SECRET-KEY': secret
-    }
-  });
-  if (!res.ok){
+  const res = await fetch(
+    `${base}/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`,
+    {
+      headers: {
+        "APCA-API-KEY-ID": key,
+        "APCA-API-SECRET-KEY": secret,
+      },
+    },
+  );
+  if (!res.ok) {
     const text = await res.text();
     throw new Error(`Alpaca data error ${res.status}: ${text}`);
   }
