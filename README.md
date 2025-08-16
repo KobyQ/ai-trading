@@ -1,13 +1,15 @@
-# AI Trading (Daily/Hourly)
+# AI Trading
 
 **AI-Driven Algorithmic Trading System** using:
 
-- **Frontend**: Next.js (App Router) on **Vercel**
-- **Backend**: **Supabase** (Postgres + Auth + RLS + Edge Functions + pg_cron)
-- **AI**: Azure OpenAI (private tenant) for explainability (pros/cons, risk notes)
-- **Scheduling**: pg_cron / Supabase Scheduler (with Vercel Cron as backup)
+* **Frontend**: Next.js (App Router) on **Vercel**
+* **Backend**: **Supabase** (Postgres + Auth + RLS + Edge Functions + pg\_cron)
+* **AI**: Azure OpenAI (private tenant) for explainability (pros/cons, risk notes)
+* **Scheduling**: pg\_cron / Supabase Scheduler (with Vercel Cron as backup)
 
 > Scope: Daily/Hourly strategies (no tick/HFT). Research runs T-60 before market open; per-minute monitoring for risk automation.
+
+---
 
 ## Structure
 
@@ -22,51 +24,208 @@
 /.github/workflows     # CI templates
 ```
 
+---
+
 ## Setup & Running
 
 Follow these steps to get a local environment and Supabase project ready.
 
-1. **Prerequisites**
-   - Install Node.js 20+ and the [PNPM](https://pnpm.io/) package manager.
-   - Install the [Supabase CLI](https://supabase.com/docs/guides/cli) to run migrations and deploy edge functions.
+### 1. Prerequisites
 
-2. **Install dependencies**
-   ```bash
-   pnpm install
-   ```
+* Node.js 20+ and [PNPM](https://pnpm.io/)
+* [Supabase CLI](https://supabase.com/docs/guides/cli)
 
-3. **Environment variables**
-   - Copy `.env.example` to `.env` in the repo root and populate broker creds, Azure OpenAI keys and optional Telegram tokens.
-   - In `apps/web/.env` set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
-   - For edge functions (`supabase/functions/.env`) include `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` and any broker API settings.
+```bash
+# Node & pnpm
+node -v
+corepack enable && corepack prepare pnpm@latest --activate
 
-4. **Supabase project**
-   - Create a Supabase project and run SQL migrations from `supabase/migrations`.
-   - Apply row‑level security policies in `supabase/policies`.
-   - Enable TOTP MFA by setting `auth.mfa.totp.enroll_enabled=true` and `verify_enabled=true` in `supabase/config.toml`.
+# Supabase CLI (macOS)
+brew install supabase/tap/supabase
+# or
+npm i -g supabase
+```
 
-5. **Deploy Edge Functions**
-   ```bash
-   supabase functions deploy research-run
-   supabase functions deploy monitor-open-trades
-   ```
+---
 
-6. **Schedule jobs**
-   - Daily research: `30 13 * * 1-5` (60 min before U.S. market open).
-   - Optional hourly research: `0 * * * *` calling `rpc_start_research('1h')`.
-   - Update existing jobs with `cron.unschedule`/`cron.schedule` if needed.
+### 2. Install dependencies
 
-7. **Run the Next.js app**
-   ```bash
-   cd apps/web
-   pnpm dev
-   ```
+```bash
+pnpm install
+```
 
-8. **Optional services**
-   - Provide broker API keys or store them in Azure Key Vault referenced by `AZURE_KEY_VAULT_URL`.
-   - Deploy `kill-switch` or `rotate-broker-keys` functions and configure Telegram notifications if desired.
+---
+
+### 3. Environment variables
+
+* Copy `.env.example` → `.env` (repo root).
+* Copy `apps/web/.env.example` → `apps/web/.env`.
+
+**apps/web/.env** (public keys):
+
+```
+NEXT_PUBLIC_SUPABASE_URL=https://<your-project-ref>.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon-public-key>
+```
+
+**.env** (server only):
+
+```
+AZURE_OPENAI_ENDPOINT=
+AZURE_OPENAI_API_KEY=
+AZURE_OPENAI_DEPLOYMENT=
+AZURE_KEY_VAULT_URL=
+BROKER=alpaca
+BROKER_KEY=
+BROKER_SECRET=
+BROKER_PAPER=true
+BROKER_BASE_URL=
+```
+
+---
+
+### 4. Supabase project
+
+```bash
+supabase login
+supabase link --project-ref <your-project-ref>
+supabase db push
+```
+
+Verify:
+
+```sql
+select table_name from information_schema.tables
+where table_schema='public' and table_type='BASE TABLE';
+```
+
+Enable MFA (optional):
+
+```toml
+[auth.mfa.totp]
+enroll_enabled = true
+verify_enabled = true
+```
+
+---
+
+### 5. Deploy Edge Functions
+
+```bash
+supabase functions deploy research-run
+supabase functions deploy monitor-open-trades
+```
+
+Set secrets:
+
+```bash
+supabase functions secrets set \
+  AZURE_OPENAI_ENDPOINT="$AZURE_OPENAI_ENDPOINT" \
+  AZURE_OPENAI_API_KEY="$AZURE_OPENAI_API_KEY" \
+  AZURE_OPENAI_DEPLOYMENT="$AZURE_OPENAI_DEPLOYMENT" \
+  BROKER="$BROKER" \
+  BROKER_KEY="$BROKER_KEY" \
+  BROKER_SECRET="$BROKER_SECRET" \
+  BROKER_PAPER="$BROKER_PAPER" \
+  BROKER_BASE_URL="$BROKER_BASE_URL"
+```
+
+---
+
+### 6. Schedule jobs
+
+* **Daily research** (1h before U.S. market open):
+  Cron: `30 13 * * 1-5` (DST months), add `30 14 * * 1-5` for non-DST months.
+* **Monitor per-minute:** `* * * * *`
+
+Option A — Supabase Dashboard Scheduler.
+Option B — pg\_cron in DB:
+
+```sql
+create extension if not exists pg_cron;
+select cron.schedule('mra_daily_dst','30 13 * * 1-5',$$select rpc_start_research('1d')$$);
+select cron.schedule('monitor_per_min','* * * * *',$$select rpc_monitor_open_trades()$$);
+```
+
+---
+
+### 7. Seed config (optional)
+
+```sql
+insert into risk_limits (scope, cap_type, value, active) values
+('TRADE','PCT',1,true),
+('DAY','PCT',2,true),
+('WEEK','PCT',5,true)
+on conflict do nothing;
+```
+
+---
+
+### 8. Run the Next.js app
+
+```bash
+cd apps/web
+pnpm dev
+# http://localhost:3000
+```
+
+---
+
+### 9. Smoke tests
+
+```bash
+# research run
+supabase functions invoke research-run --no-verify-jwt --data '{"timeframe":"1d"}'
+
+# monitor run
+supabase functions invoke monitor-open-trades --no-verify-jwt --data '{}'
+```
+
+API test:
+
+```bash
+curl -X POST http://localhost:3000/api/opportunities/<uuid>/approve \
+  -H "Content-Type: application/json"
+```
+
+UI test: visit `/opportunities`, approve one, and confirm audit log/trade row.
+
+---
+
+### 10. Deploy web to Vercel
+
+```bash
+npm i -g vercel
+vercel link
+vercel
+```
+
+Add **Environment Variables** in Vercel → Settings:
+
+```
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_ANON_KEY
+AZURE_OPENAI_ENDPOINT
+AZURE_OPENAI_API_KEY
+AZURE_OPENAI_DEPLOYMENT
+AZURE_KEY_VAULT_URL
+```
+
+Add Vercel Cron (backup):
+
+* 08:00 GMT daily → `GET /api/mra/run?type=DAILY`
+* 12:00 GMT daily → `GET /api/mra/run?type=MIDDAY`
+
+---
 
 ## Notes
-- Orders are **paper** by default (stubbed broker). Broker credentials are loaded from Azure Key Vault and rotated quarterly.
-- All writes go to Postgres with idempotency and full audit logs.
-- Trailing-stop tightening occurs on discrete milestones (+0.5R, +1R, …).
+
+* Orders are **paper** by default (stubbed broker).
+* Broker creds can live in **Azure Key Vault**.
+* All writes are idempotent and audited.
+* Trailing-stops tighten on milestones (+0.5R, +1R, …).
+* “Done” means: db migrations applied, functions deployed, `/opportunities` showing rows, approvals writing trades + audit logs, and schedules running daily/hourly.
+
+---
+
+Would you like me to also **add a Makefile with shortcut commands** (e.g. `make dev`, `make deploy-fns`, `make run-research`) so setup is even smoother for you and teammates?
