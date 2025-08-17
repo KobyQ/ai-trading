@@ -1,8 +1,17 @@
-// supabase/functions/research-run/index.ts
 import { createClient } from "@supabase/supabase-js";
 import { sma, rsi, detectRegime } from "../_shared/strategy.ts";
 import { insertAuditLog } from "../_shared/audit.ts";
 import { netEdge, transactionCost, slippage } from "../../../packages/strategy/index.ts";
+
+/*
+ * This edge function orchestrates a research run on a set of symbols.  It fetches
+ * recent market data from Alpaca, computes technical indicators (SMA20, RSI14
+ * and a simple regime detector), uses Azure OpenAI to generate an AI summary
+ * including a buy/sell recommendation, and writes both the raw market data
+ * and the resulting trade opportunities into Supabase tables.  Azure is
+ * always required; if the Azure endpoint is unreachable or misconfigured the
+ * function will return an error rather than falling back to heuristics.
+ */
 
 /* ----------------------------- utils & guards ----------------------------- */
 
@@ -12,12 +21,8 @@ function requireEnv(name: string): string {
   return value;
 }
 
-function requireBoolEnv(name: string, def = "false") {
-  const v = (Deno.env.get(name) ?? def).trim().toLowerCase();
-  return v === "1" || v === "true" || v === "yes";
-}
-
-const REQUIRE_AZURE = requireBoolEnv("REQUIRE_AZURE", "true");
+// Azure must always be available; do not allow disabling via environment.
+const REQUIRE_AZURE = true;
 
 type UiTF = "1D" | "1H";
 type AlpacaTF = "1Day" | "1Hour";
@@ -207,6 +212,8 @@ function deriveHeuristicRisk(rsiVal: number, regime: string) {
 type AIResult = {
   summary: string;
   risks: string;
+  /** BUY or SELL decision from Azure */
+  decision: string;
   ai_source: "azure" | "heuristic";
   ai_request_id?: string | null;
   ai_latency_ms?: number;
@@ -251,7 +258,7 @@ async function azurePreflight(): Promise<boolean> {
         headers: { "content-type": "application/json", "api-key": azureKey },
         body: JSON.stringify({
           messages: [{ role: "user", content: "ping" }],
-          max_completion_tokens: 200,
+          max_completion_tokens: 16384,
         }),
       },
       8000
@@ -286,9 +293,9 @@ async function azurePreflight(): Promise<boolean> {
 async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, regime: string): Promise<AIResult> {
   const baseSummary = `Regime ${regime}; SMA20 ${smaVal.toFixed(2)}, RSI14 ${rsiVal.toFixed(2)}`;
 
+  // Always require Azure; if missing, throw.
   if (!azureEndpoint || !azureKey || !azureDeployment) {
-    if (REQUIRE_AZURE) throw new Error("Azure required but missing ENDPOINT/API_KEY/DEPLOYMENT");
-    return { summary: baseSummary, risks: deriveHeuristicRisk(rsiVal, regime), ai_source: "heuristic", ai_fallback_used: "heuristic", ai_echo_validated: false };
+    throw new Error("Azure required but missing ENDPOINT/API_KEY/DEPLOYMENT");
   }
 
   const echo = {
@@ -315,7 +322,7 @@ async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, 
       `Use these values WITHOUT CHANGING THEM:\n` +
       `echo: ${JSON.stringify(echo)}\n` +
       `input_hash: ${inputHashHex}\n` +
-      `Return a concise "summary" and 1–6 short "risks".`,
+      `Return a concise "summary", 1–6 short "risks", and a "decision" that is either BUY or SELL.`,
   };
 
   const url = `${azureEndpoint}/openai/deployments/${encodeURIComponent(azureDeployment)}/chat/completions?api-version=${encodeURIComponent(azureApiVersion)}`;
@@ -323,13 +330,13 @@ async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, 
   // Azure-only body: omit temperature/top_p/seed
   const baseBody = {
     messages: [system, user],
-    max_completion_tokens: 200,
+    max_completion_tokens: 16384,
   };
 
   const schemaRF = {
     type: "json_schema",
     json_schema: {
-      name: "summary_and_risks",
+      name: "summary_risks_decision",
       strict: true,
       schema: {
         type: "object",
@@ -354,9 +361,10 @@ async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, 
             minItems: 1,
             maxItems: 6,
           },
+          decision: { type: "string", enum: ["BUY", "SELL"] },
           error: { type: "string" },
         },
-        required: ["echo", "input_hash", "summary", "risks"],
+        required: ["echo", "input_hash", "summary", "risks", "decision"],
       },
     },
   } as const;
@@ -388,19 +396,38 @@ async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, 
     if (!res.ok) {
       const text = await res.text();
       console.error("Azure OpenAI error", res.status, text);
-      if (REQUIRE_AZURE) throw new Error(`Azure OpenAI error ${res.status}`);
-      return { summary: baseSummary, risks: deriveHeuristicRisk(rsiVal, regime), ai_source: "heuristic", ai_fallback_used: "heuristic", ai_echo_validated: false };
+      throw new Error(`Azure OpenAI error ${res.status}`);
     }
 
-    const azureRequestId = res.headers.get("x-request-id") ?? res.headers.get("apim-request-id");
-    const rateLimitRem = res.headers.get("x-ratelimit-remaining-tokens");
-    const latencyMs = Number(res.headers.get("x-processing-ms") ?? "0") || undefined;
+    // Extract headers for metrics
+    let azureRequestId = res.headers.get("x-request-id") ?? res.headers.get("apim-request-id");
+    let rateLimitRem = res.headers.get("x-ratelimit-remaining-tokens");
+    let latencyMs = Number(res.headers.get("x-processing-ms") ?? "0") || undefined;
 
-    const json = await res.json();
-    const content = json?.choices?.[0]?.message?.content;
+    // Parse body; if empty content, attempt a json_object fallback once
+    let json = await res.json();
+    let content = json?.choices?.[0]?.message?.content;
+
     if (typeof content !== "string" || !content.trim()) {
-      if (REQUIRE_AZURE) throw new Error("Azure returned empty content");
-      return { summary: baseSummary, risks: deriveHeuristicRisk(rsiVal, regime), ai_source: "heuristic", ai_fallback_used: "heuristic", ai_echo_validated: false };
+      // Attempt fallback call if we haven't already used json_object
+      if (usedFallback === null) {
+        usedFallback = "json_object";
+        res = await doCall({ type: "json_object" });
+        if (!res.ok) {
+          const text = await res.text();
+          console.error("Azure OpenAI error", res.status, text);
+          throw new Error(`Azure OpenAI error ${res.status}`);
+        }
+        azureRequestId = res.headers.get("x-request-id") ?? res.headers.get("apim-request-id");
+        rateLimitRem = res.headers.get("x-ratelimit-remaining-tokens");
+        latencyMs = Number(res.headers.get("x-processing-ms") ?? "0") || undefined;
+        json = await res.json();
+        content = json?.choices?.[0]?.message?.content;
+      }
+      // If still empty after fallback, throw
+      if (typeof content !== "string" || !content.trim()) {
+        throw new Error("Azure returned empty content");
+      }
     }
 
     // -------- Hardened parsing & validation ----------
@@ -408,8 +435,7 @@ async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, 
     try {
       parsed = JSON.parse(content);
     } catch {
-      if (REQUIRE_AZURE) throw new Error("Azure returned non-JSON content");
-      return { summary: baseSummary, risks: deriveHeuristicRisk(rsiVal, regime), ai_source: "heuristic", ai_fallback_used: "heuristic", ai_echo_validated: false };
+      throw new Error("Azure returned non-JSON content");
     }
 
     const toNum = (x: any) => (typeof x === "number" ? x : Number(x));
@@ -442,12 +468,18 @@ async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, 
         ? parsed.risks.filter((s: any) => typeof s === "string" && s.trim()).join("; ")
         : String(parsed.risks ?? "");
 
+    const decision: string = typeof parsed.decision === "string" ? parsed.decision.toUpperCase() : "";
+    if (decision !== "BUY" && decision !== "SELL") {
+      throw new Error("Invalid decision field");
+    }
+
     // Optional: consider schema-guaranteed success
-    const schemaGuaranteed = (usedFallback === null);
+    const schemaGuaranteed = usedFallback === null;
 
     return {
       summary: String(parsed.summary ?? baseSummary),
       risks: risksOut || deriveHeuristicRisk(rsiVal, regime),
+      decision,
       ai_source: "azure",
       ai_request_id: json?.id ?? azureRequestId,
       ai_latency_ms: latencyMs,
@@ -457,8 +489,7 @@ async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, 
     };
   } catch (e) {
     console.error("generateAnalysis verification failed", e);
-    if (REQUIRE_AZURE) throw e;
-    return { summary: baseSummary, risks: deriveHeuristicRisk(rsiVal, regime), ai_source: "heuristic", ai_fallback_used: "heuristic", ai_echo_validated: false };
+    throw e;
   }
 }
 
@@ -476,7 +507,8 @@ Deno.serve(async (req) => {
     const modelVersion = searchParams.get("model_version") ?? undefined;
     const symbols = parseSymbols(searchParams.get("symbols"));
 
-    const azureRequired = (searchParams.get("azure_required") ?? "").trim() === "1" || REQUIRE_AZURE;
+    // Always require Azure; ignore azure_required parameter.
+    const azureRequired = true;
 
     const url = requireEnv("SUPABASE_URL");
     const key = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
@@ -522,8 +554,7 @@ Deno.serve(async (req) => {
       });
     }
 
-
-    const results: Array<{ symbol: string; id: number; ai_source: "azure" | "heuristic"; ai_request_id?: string | null }> = [];
+    const results: Array<{ symbol: string; id: number; ai_source: "azure" | "heuristic"; ai_request_id?: string | null; ai_decision: string }> = [];
     const errors: string[] = [];
     let anyHeuristic = false;
 
@@ -596,16 +627,14 @@ Deno.serve(async (req) => {
           const confidence = grossEdge < 1e-9 ? 0 : Math.max(0, Math.min(1, net / (grossEdge || 1)));
 
           const ai = await generateAnalysis(symbol, sma20, rsi14, regime);
-          if (azureRequired && ai.ai_source !== "azure") {
-            throw new Error("Azure required but AI result is heuristic");
-          }
+          // Azure is always required; heuristic source should never occur.
           if (ai.ai_source !== "azure") anyHeuristic = true;
 
           const { data, error } = await supabase
             .from("trade_opportunities")
             .insert({
               symbol,
-              side: "LONG",
+              side: ai.decision === "BUY" ? "LONG" : "SHORT",
               timeframe: timeframe.toLowerCase(),
               entry_plan_json: { price: last.c, transaction_cost: txCost, slippage: slip, net_edge: net },
               stop_plan_json: { stop: last.l },
@@ -616,6 +645,7 @@ Deno.serve(async (req) => {
               ai_summary: ai.summary,
               ai_risks: ai.risks,
               ai_source: ai.ai_source,
+              ai_decision: ai.decision,
               ai_request_id: ai.ai_request_id ?? null,
               ai_latency_ms: ai.ai_latency_ms ?? null,
               ai_echo_validated: ai.ai_echo_validated ?? null,
@@ -627,7 +657,7 @@ Deno.serve(async (req) => {
 
           if (error) throw error;
 
-          results.push({ symbol, id: data!.id, ai_source: ai.ai_source, ai_request_id: ai.ai_request_id });
+          results.push({ symbol, id: data!.id, ai_source: ai.ai_source, ai_request_id: ai.ai_request_id, ai_decision: ai.decision });
 
           await insertAuditLog(supabase, {
             actor_type: "SYSTEM",
@@ -641,6 +671,7 @@ Deno.serve(async (req) => {
               model_id: modelId,
               model_version: modelVersion,
               ai_source: ai.ai_source,
+              ai_decision: ai.decision,
               ai_request_id: ai.ai_request_id ?? null,
               ai_latency_ms: ai.ai_latency_ms ?? null,
               ai_echo_validated: ai.ai_echo_validated ?? null,
