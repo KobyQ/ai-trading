@@ -1,6 +1,5 @@
 // supabase/functions/research-run/index.ts
 import { createClient } from "@supabase/supabase-js";
-import { fetchPaperBars } from "../_shared/execution.ts";
 import { sma, rsi, detectRegime } from "../_shared/strategy.ts";
 import { insertAuditLog } from "../_shared/audit.ts";
 import { netEdge, transactionCost, slippage } from "../../../packages/strategy/index.ts";
@@ -13,11 +12,15 @@ function requireEnv(name: string): string {
   return value;
 }
 
-function coerceTimeframe(raw?: string | null): "1D" | "1H" {
-  const t = (raw ?? "1D").toUpperCase().trim();
-  if (t === "1D" || t === "1H") return t;
-  console.warn(`Unknown timeframe "${raw}" -> defaulting to 1D`);
-  return "1D";
+type UiTF = "1D" | "1H";
+type AlpacaTF = "1Day" | "1Hour";
+
+function coerceTimeframe(raw?: string | null): UiTF {
+  const t = (raw ?? "1D").trim().toUpperCase();
+  return t === "1H" ? "1H" : "1D";
+}
+function mapToAlpacaTimeframe(tf: UiTF): AlpacaTF {
+  return tf === "1H" ? "1Hour" : "1Day";
 }
 
 function parseSymbols(input?: string | null): string[] {
@@ -26,11 +29,12 @@ function parseSymbols(input?: string | null): string[] {
     .split(",")
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean);
-
   const uniq = Array.from(new Set(base));
   if (uniq.length === 0) throw new Error("No valid symbols provided");
   return uniq;
 }
+
+/* ----------------------------- hashing + saving ---------------------------- */
 
 async function hashBar(b: { t: string; o: number; h: number; l: number; c: number; v: number }) {
   const str = `${b.t}|${b.o}|${b.h}|${b.l}|${b.c}|${b.v}`;
@@ -41,7 +45,7 @@ async function hashBar(b: { t: string; o: number; h: number; l: number; c: numbe
 async function saveBars(
   supabase: ReturnType<typeof createClient>,
   symbol: string,
-  timeframe: "1D" | "1H",
+  timeframe: UiTF,
   bars: Array<{ t: string; o: number; h: number; l: number; c: number; v: number }>
 ) {
   for (const b of bars) {
@@ -76,14 +80,76 @@ async function saveBars(
   }
 }
 
+/* ----------------------------- Alpaca fetcher ------------------------------ */
+
+type Bar = { t: string; o: number; h: number; l: number; c: number; v: number };
+
+async function fetchAlpacaBars(params: {
+  symbol: string;
+  timeframe: AlpacaTF;        // "1Day" | "1Hour"
+  startISO?: string;          // optional; default provided below
+  endISO?: string;            // optional; default provided below
+  limit?: number;             // numeric; will be stringified
+  feed?: "iex" | "sip";       // default "iex" (paper-friendly)
+  adjustment?: "raw" | "split" | "all";
+  baseUrl?: string;           // default https://data.alpaca.markets
+}): Promise<Bar[]> {
+  const key = Deno.env.get("BROKER_KEY");
+  const secret = Deno.env.get("BROKER_SECRET");
+  if (!key || !secret) throw new Error("Missing BROKER_KEY/SECRET");
+
+  const {
+    symbol,
+    timeframe,
+    startISO,
+    endISO,
+    limit = 10000,
+    feed = "iex",
+    adjustment = "raw",
+    baseUrl = "https://data.alpaca.markets",
+  } = params;
+
+  const now = new Date();
+  const defaultLookbackDays = timeframe === "1Day" ? 180 : 14;
+  const start = startISO ?? new Date(now.getTime() - defaultLookbackDays * 24 * 60 * 60 * 1000).toISOString();
+  const end = endISO ?? now.toISOString();
+
+  const url = new URL(`${baseUrl.replace(/\/+$/, "")}/v2/stocks/bars`);
+  url.searchParams.set("symbols", symbol);
+  url.searchParams.set("timeframe", timeframe);
+  url.searchParams.set("start", start);
+  url.searchParams.set("end", end);
+  url.searchParams.set("adjustment", adjustment);
+  url.searchParams.set("feed", feed);
+  url.searchParams.set("limit", String(limit));     // 👈 ensure string, not [object Object]
+
+  const res = await fetch(url.toString(), {
+    headers: {
+      "APCA-API-KEY-ID": key,
+      "APCA-API-SECRET-KEY": secret,
+    },
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    console.error("Alpaca data error", res.status, text);
+    throw new Error(`Alpaca data error ${res.status}: ${text}`);
+  }
+
+  const json = await res.json();
+  const raw: any[] = (json?.bars?.[symbol] ?? json?.bars ?? []) as any[];
+  return raw.map((b) => ({ t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }));
+}
+
+/* ---------------------------- AI summary helper ---------------------------- */
+
 async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, regime: string) {
   const baseSummary = `Regime ${regime}; SMA20 ${smaVal.toFixed(2)}, RSI14 ${rsiVal.toFixed(2)}`;
 
   const azureEndpoint = Deno.env.get("AZURE_OPENAI_ENDPOINT");
   const azureKey = Deno.env.get("AZURE_OPENAI_API_KEY");
   const azureDeployment = Deno.env.get("AZURE_OPENAI_DEPLOYMENT") ?? Deno.env.get("AZURE_OPENAI_DEPLOYMENT_ID");
-  const azureApiVersion = Deno.env.get("AZURE_OPENAI_API_VERSION") ?? "2023-07-01-preview";
-  const openaiKey = Deno.env.get("OPENAI_API_KEY");
+  const azureApiVersion = Deno.env.get("AZURE_OPENAI_API_VERSION") ?? "2025-04-01-preview";
 
   try {
     if (azureEndpoint && azureKey && azureDeployment) {
@@ -92,8 +158,6 @@ async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, 
         `Regime ${regime}; SMA20 ${smaVal.toFixed(2)}; RSI14 ${rsiVal.toFixed(2)}. ` +
         `Provide a brief summary and highlight key risks. ` +
         `Respond in JSON format with fields "summary" and "risks".`;
-
-      console.log("Calling Azure OpenAI", { endpoint: azureEndpoint, deployment: azureDeployment, symbol });
 
       const res = await fetch(
         `${azureEndpoint}/openai/deployments/${azureDeployment}/chat/completions?api-version=${azureApiVersion}`,
@@ -111,7 +175,6 @@ async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, 
         }
       );
 
-      console.log("Azure OpenAI response status", res.status);
       const json = await res.json();
       const content = json.choices?.[0]?.message?.content;
       if (content) {
@@ -121,38 +184,10 @@ async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, 
             summary: parsed.summary ?? baseSummary,
             risks: parsed.risks ?? "High volatility",
           };
-        } catch {
-          // fall through to OpenAI or base
-        }
+        } catch {}
       }
     }
 
-    if (openaiKey) {
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${openaiKey}` },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [
-            {
-              role: "user",
-              content:
-                `Given the following market data for ${symbol}: Regime ${regime}, ` +
-                `SMA20 ${smaVal.toFixed(2)}, RSI14 ${rsiVal.toFixed(2)}. ` +
-                `Provide a short trading summary and key risks.`,
-            },
-          ],
-          max_tokens: 120,
-        }),
-      });
-      const json = await res.json();
-      const text = json.choices?.[0]?.message?.content ?? "";
-      const [summary, risks] = text.split("Risks:");
-      return {
-        summary: summary?.trim() || baseSummary,
-        risks: risks?.trim() || "High volatility",
-      };
-    }
   } catch (e) {
     console.error("generateAnalysis failed", e);
   }
@@ -162,19 +197,11 @@ async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, 
 
 /* --------------------------------- serve --------------------------------- */
 
-/**
- * Research run generates simple trade opportunities for one or more symbols.
- *
- * Query parameters:
- * - `symbols`        Comma-separated stock symbols (default AAPL)
- * - `timeframe`      1D or 1H (default 1D)
- * - `model_id`       Optional model identifier (for audit)
- * - `model_version`  Optional model version (for audit)
- */
 Deno.serve(async (req) => {
   try {
     const { searchParams } = new URL(req.url);
-    const timeframe = coerceTimeframe(searchParams.get("timeframe"));
+    const timeframe = coerceTimeframe(searchParams.get("timeframe")); // "1D" | "1H"
+    const alpacaTF = mapToAlpacaTimeframe(timeframe);                 // "1Day" | "1Hour"
     const modelId = searchParams.get("model_id") ?? undefined;
     const modelVersion = searchParams.get("model_version") ?? undefined;
     const symbols = parseSymbols(searchParams.get("symbols"));
@@ -186,7 +213,7 @@ Deno.serve(async (req) => {
     const results: Array<{ symbol: string; id: number }> = [];
     const errors: string[] = [];
 
-    console.log("research-run start", { timeframe, symbols, modelId, modelVersion });
+    console.log("research-run start", { timeframe, alpacaTF, symbols, modelId, modelVersion });
 
     await Promise.all(
       symbols.map(async (symbol) => {
@@ -198,20 +225,32 @@ Deno.serve(async (req) => {
             payload_json: { symbol, timeframe, model_id: modelId, model_version: modelVersion },
           });
 
-          console.log("fetchPaperBars params", { symbol, timeframe });
-          const bars = await fetchPaperBars(symbol, timeframe);
+          // Wide default window to avoid weekend/holiday gaps
+          const now = new Date();
+          const lookbackDays = timeframe === "1D" ? 180 : 14;
+          const startISO = new Date(now.getTime() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
+          const endISO = now.toISOString();
 
-          console.log("bars length", bars?.length ?? 0);
+          const bars = await fetchAlpacaBars({
+            symbol,
+            timeframe: alpacaTF,
+            startISO,
+            endISO,
+            feed: "iex",
+            limit: 10000,
+            adjustment: "raw",
+          });
 
-          // Treat "no data" as an error so we don't silently return ok:true + []
-          if (!bars || bars.length === 0) {
+          console.log("bars length", symbol, bars.length);
+
+          if (bars.length === 0) {
             await insertAuditLog(supabase, {
               actor_type: "SYSTEM",
               action: "NO_DATA",
               entity_type: "market_data",
-              payload_json: { symbol, timeframe },
+              payload_json: { symbol, timeframe, sent_timeframe: alpacaTF, startISO, endISO, feed: "iex" },
             });
-            throw new Error(`No bars returned for ${symbol} ${timeframe}`);
+            throw new Error(`No bars returned for ${symbol} ${timeframe} (sent ${alpacaTF})`);
           }
 
           await saveBars(supabase, symbol, timeframe, bars);
@@ -230,7 +269,6 @@ Deno.serve(async (req) => {
 
           const last = bars[bars.length - 1];
 
-          // Defensive: if not enough history, default last values
           const sma20 = Number.isFinite(sma20Arr.at(-1)!) ? (sma20Arr.at(-1) as number) : last.c;
           const rsi14 = Number.isFinite(rsi14Arr.at(-1)!) ? (rsi14Arr.at(-1) as number) : 50;
 
@@ -272,22 +310,17 @@ Deno.serve(async (req) => {
             .select("id")
             .single();
 
-          if (error) {
-            console.error("insert trade_opportunities failed for", symbol, error);
-            throw error;
-          }
+          if (error) throw error;
 
-          if (data) {
-            results.push({ symbol, id: data.id });
+          results.push({ symbol, id: data!.id });
 
-            await insertAuditLog(supabase, {
-              actor_type: "SYSTEM",
-              action: "OPPORTUNITY_CREATED",
-              entity_type: "trade_opportunity",
-              entity_id: data.id,
-              payload_json: { symbol, timeframe, model_id: modelId, model_version: modelVersion },
-            });
-          }
+          await insertAuditLog(supabase, {
+            actor_type: "SYSTEM",
+            action: "OPPORTUNITY_CREATED",
+            entity_type: "trade_opportunity",
+            entity_id: data!.id,
+            payload_json: { symbol, timeframe, model_id: modelId, model_version: modelVersion },
+          });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           errors.push(`${symbol}: ${msg}`);
@@ -296,21 +329,17 @@ Deno.serve(async (req) => {
       })
     );
 
-    if (errors.length) {
-      // Keep the previous behavior: fail the whole run if any symbol errored
-      throw new Error(`research-run encountered errors: ${errors.join("; ")}`);
-    }
+    if (errors.length) throw new Error(`research-run encountered errors: ${errors.join("; ")}`);
 
-    return new Response(
-      JSON.stringify({ ok: true, opportunities: results }),
-      { headers: { "content-type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ ok: true, opportunities: results }), {
+      headers: { "content-type": "application/json" },
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("research-run fatal error", e);
-    return new Response(
-      JSON.stringify({ ok: false, error: msg }),
-      { status: 500, headers: { "content-type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ ok: false, error: msg }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
   }
 });
