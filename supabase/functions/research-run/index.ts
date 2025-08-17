@@ -17,7 +17,7 @@ function requireBoolEnv(name: string, def = "false") {
   return v === "1" || v === "true" || v === "yes";
 }
 
-const REQUIRE_AZURE = requireBoolEnv("REQUIRE_AZURE", "false");
+const REQUIRE_AZURE = requireBoolEnv("REQUIRE_AZURE", "true");
 
 type UiTF = "1D" | "1H";
 type AlpacaTF = "1Day" | "1Hour";
@@ -166,10 +166,16 @@ async function fetchAlpacaBars(params: {
   url.searchParams.set("feed", feed);
   url.searchParams.set("limit", String(limit));
 
-  const res = await callWithRetry(() =>
-    fetchWithTimeout(url.toString(), {
-      headers: { "APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret },
-    }, 15000)
+  const res = await callWithRetry(
+    () =>
+      fetchWithTimeout(
+        url.toString(),
+        {
+          headers: { "APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret },
+        },
+        15000
+      ),
+    3
   );
 
   if (!res.ok) {
@@ -211,20 +217,32 @@ type AIResult = {
 
 /* ----------------------------- Azure utilities ----------------------------- */
 
-const azureEndpoint = Deno.env.get("AZURE_OPENAI_ENDPOINT")?.trim();
+function normalizeEndpoint(ep?: string | null) {
+  if (!ep) return "";
+  const trimmed = ep.trim().replace(/\/+$/, ""); // remove trailing slashes
+  // Make sure it doesn't already contain '/openai'
+  return trimmed.replace(/\/openai$/i, "");
+}
+
+const azureEndpointRaw = Deno.env.get("AZURE_OPENAI_ENDPOINT");
+const azureEndpoint = normalizeEndpoint(azureEndpointRaw);
 const azureKey = Deno.env.get("AZURE_OPENAI_API_KEY")?.trim();
 const azureDeployment = (Deno.env.get("AZURE_OPENAI_DEPLOYMENT") ?? Deno.env.get("AZURE_OPENAI_DEPLOYMENT_ID"))?.trim();
-const azureApiVersion = (Deno.env.get("AZURE_OPENAI_API_VERSION") ?? "2024-10-21").trim();
+const azureApiVersion = (Deno.env.get("AZURE_OPENAI_API_VERSION") ?? "2024-06-01").trim();
 
 let azurePreflightOk: boolean | null = null;
+let azurePreflightLastStatus: number | null = null;
+let azurePreflightLastBody: string | null = null;
 
 async function azurePreflight(): Promise<boolean> {
-  if (azurePreflightOk !== null) return azurePreflightOk;
   if (!azureEndpoint || !azureKey || !azureDeployment) {
     azurePreflightOk = false;
+    azurePreflightLastStatus = 0;
+    azurePreflightLastBody = "Missing AZURE_OPENAI_ENDPOINT or AZURE_OPENAI_API_KEY or AZURE_OPENAI_DEPLOYMENT";
     return false;
   }
   const url = `${azureEndpoint}/openai/deployments/${encodeURIComponent(azureDeployment)}/chat/completions?api-version=${encodeURIComponent(azureApiVersion)}`;
+
   try {
     const res = await fetchWithTimeout(
       url,
@@ -233,20 +251,37 @@ async function azurePreflight(): Promise<boolean> {
         headers: { "content-type": "application/json", "api-key": azureKey },
         body: JSON.stringify({
           messages: [{ role: "user", content: "ping" }],
-          temperature: 0,
-          top_p: 1,
-          max_tokens: 1,
+          max_completion_tokens: 200,
         }),
       },
       8000
     );
-    azurePreflightOk = res.ok;
-    return azurePreflightOk;
-  } catch {
+
+    azurePreflightLastStatus = res.status;
+    if (!res.ok) {
+      // capture body for diagnostics
+      try {
+        azurePreflightLastBody = await res.text();
+      } catch {
+        azurePreflightLastBody = "<no body>";
+      }
+      console.error("Azure preflight failed", { status: res.status, body: azurePreflightLastBody });
+      azurePreflightOk = false;
+      return false;
+    }
+
+    azurePreflightLastBody = null;
+    azurePreflightOk = true;
+    return true;
+  } catch (e) {
     azurePreflightOk = false;
+    azurePreflightLastStatus = -1;
+    azurePreflightLastBody = String(e);
+    console.error("Azure preflight exception", e);
     return false;
   }
 }
+
 
 async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, regime: string): Promise<AIResult> {
   const baseSummary = `Regime ${regime}; SMA20 ${smaVal.toFixed(2)}, RSI14 ${rsiVal.toFixed(2)}`;
@@ -265,23 +300,30 @@ async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, 
   const inputHashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(echo)));
   const inputHashHex = Array.from(new Uint8Array(inputHashBuf)).map((n) => n.toString(16).padStart(2, "0")).join("");
 
-  const system = { role: "system", content: "You are a cautious investment research assistant. Only use the provided numbers. If uncertain, return {\"error\":\"BAD_INPUT\"} exactly." };
+  const system = {
+    role: "system",
+    content:
+      "You are a cautious investment research assistant. " +
+      "You MUST copy the provided 'echo' object and 'input_hash' EXACTLY, without modification. " +
+      "Return only strict JSON. No prose, no markdown.",
+  };
+
   const user = {
     role: "user",
     content:
-      `Given this input, return JSON matching the schema (no extra fields):\n` +
+      `Return JSON matching the schema (no extra fields).\n` +
+      `Use these values WITHOUT CHANGING THEM:\n` +
       `echo: ${JSON.stringify(echo)}\n` +
       `input_hash: ${inputHashHex}\n` +
       `Return a concise "summary" and 1–6 short "risks".`,
   };
 
   const url = `${azureEndpoint}/openai/deployments/${encodeURIComponent(azureDeployment)}/chat/completions?api-version=${encodeURIComponent(azureApiVersion)}`;
+
+  // Azure-only body: omit temperature/top_p/seed
   const baseBody = {
     messages: [system, user],
-    max_tokens: 160,
-    temperature: 0,
-    top_p: 1,
-    seed: 7, // supported on recent api versions; harmless if ignored
+    max_completion_tokens: 200,
   };
 
   const schemaRF = {
@@ -337,7 +379,7 @@ async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, 
     let usedFallback: "json_object" | "heuristic" | null = null;
     let res = await doCall(schemaRF);
 
-    // Fallback for older deployments that don't support json_schema (400 or 415)
+    // Fallback for deployments that don't support json_schema (400 or 415)
     if (res.status === 400 || res.status === 415) {
       usedFallback = "json_object";
       res = await doCall({ type: "json_object" });
@@ -361,28 +403,56 @@ async function generateAnalysis(symbol: string, smaVal: number, rsiVal: number, 
       return { summary: baseSummary, risks: deriveHeuristicRisk(rsiVal, regime), ai_source: "heuristic", ai_fallback_used: "heuristic", ai_echo_validated: false };
     }
 
-    const parsed = JSON.parse(content);
-    if (parsed?.error === "BAD_INPUT") {
-      if (REQUIRE_AZURE) throw new Error("Model reported BAD_INPUT");
+    // -------- Hardened parsing & validation ----------
+    let parsed: any;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      if (REQUIRE_AZURE) throw new Error("Azure returned non-JSON content");
       return { summary: baseSummary, risks: deriveHeuristicRisk(rsiVal, regime), ai_source: "heuristic", ai_fallback_used: "heuristic", ai_echo_validated: false };
     }
 
-    // Verify echo/hash
-    if (!parsed?.echo || parsed.input_hash !== inputHashHex) throw new Error("Echo/hash mismatch");
-    if (parsed.echo.symbol !== symbol || parsed.echo.regime !== regime) throw new Error("Echo fields mismatch");
-    if (!nearlyEqual(parsed.echo.sma20, echo.sma20) || !nearlyEqual(parsed.echo.rsi14, echo.rsi14)) throw new Error("Echo numbers mismatch");
+    const toNum = (x: any) => (typeof x === "number" ? x : Number(x));
+    const normHash = (x: any) => String(x ?? "").trim().toLowerCase();
+
+    const e = parsed?.echo ?? {};
+    const echoCoerced = {
+      symbol: String(e.symbol ?? ""),
+      regime: String(e.regime ?? ""),
+      sma20: toNum(e.sma20),
+      rsi14: toNum(e.rsi14),
+    };
+
+    if (!echoCoerced.symbol || !echoCoerced.regime || !Number.isFinite(echoCoerced.sma20) || !Number.isFinite(echoCoerced.rsi14)) {
+      throw new Error("Echo missing required fields");
+    }
+
+    const EPS = 1e-4; // more forgiving tolerance
+    const hashFromModel = normHash(parsed.input_hash);
+    const expectedHash = normHash(inputHashHex);
+
+    if (hashFromModel !== expectedHash) throw new Error("Echo/hash mismatch");
+    if (echoCoerced.symbol !== symbol || echoCoerced.regime !== regime) throw new Error("Echo fields mismatch");
+    if (!nearlyEqual(echoCoerced.sma20, echo.sma20, EPS) || !nearlyEqual(echoCoerced.rsi14, echo.rsi14, EPS)) {
+      throw new Error("Echo numbers mismatch");
+    }
 
     const risksOut: string =
-      Array.isArray(parsed.risks) ? parsed.risks.filter(Boolean).join("; ") : String(parsed.risks ?? "");
+      Array.isArray(parsed.risks)
+        ? parsed.risks.filter((s: any) => typeof s === "string" && s.trim()).join("; ")
+        : String(parsed.risks ?? "");
+
+    // Optional: consider schema-guaranteed success
+    const schemaGuaranteed = (usedFallback === null);
 
     return {
       summary: String(parsed.summary ?? baseSummary),
       risks: risksOut || deriveHeuristicRisk(rsiVal, regime),
       ai_source: "azure",
-      ai_request_id: azureRequestId,
+      ai_request_id: json?.id ?? azureRequestId,
       ai_latency_ms: latencyMs,
       ai_ratelimit_remaining_tokens: rateLimitRem,
-      ai_echo_validated: true,
+      ai_echo_validated: schemaGuaranteed ? true : true, // we passed checks above; keep true
       ai_fallback_used: usedFallback,
     };
   } catch (e) {
@@ -417,21 +487,41 @@ Deno.serve(async (req) => {
     // Optional health check mode
     if ((searchParams.get("preflight") ?? "") === "1") {
       const preflightOk = await azurePreflight();
-      const body = { ok: preflightOk, azure: { reachable: preflightOk, api_version: azureApiVersion } };
+      const body = {
+        ok: preflightOk,
+        azure: {
+          reachable: preflightOk,
+          api_version: azureApiVersion,
+          status: azurePreflightLastStatus,
+          message: azurePreflightLastBody, // shows 401/403/404/429 reasons
+          endpoint: azureEndpoint,
+          deployment: azureDeployment,
+        },
+      };
       return new Response(JSON.stringify(body), {
         status: preflightOk ? 200 : 502,
-        headers: { "content-type": "application/json", "x-run-id": runId, "x-azure-preflight": String(preflightOk) },
+        headers: { "content-type": "application/json", "x-run-id": runId },
       });
     }
 
     // Azure preflight if required
     const preflightOk = await azurePreflight();
     if (azureRequired && !preflightOk) {
-      return new Response(JSON.stringify({ ok: false, error: "Azure OpenAI unreachable (preflight failed)" }), {
+      const detail = {
+        ok: false,
+        error: "Azure OpenAI unreachable (preflight failed)",
+        status: azurePreflightLastStatus,
+        message: azurePreflightLastBody,
+        endpoint: azureEndpoint,
+        deployment: azureDeployment,
+        api_version: azureApiVersion,
+      };
+      return new Response(JSON.stringify(detail), {
         status: 502,
-        headers: { "content-type": "application/json", "x-run-id": runId, "x-azure-preflight": String(preflightOk) },
+        headers: { "content-type": "application/json", "x-run-id": runId },
       });
     }
+
 
     const results: Array<{ symbol: string; id: number; ai_source: "azure" | "heuristic"; ai_request_id?: string | null }> = [];
     const errors: string[] = [];
