@@ -28,9 +28,10 @@ export interface OrderRequest {
 
 async function alpacaFetch(path: string, opts: RequestInit) {
   const base = 'https://paper-api.alpaca.markets/v2';
+  const { key, secret } = getBrokerCreds();
   const headers = {
-    'APCA-API-KEY-ID': process.env.BROKER_KEY,
-    'APCA-API-SECRET-KEY': process.env.BROKER_SECRET,
+    'APCA-API-KEY-ID': key,
+    'APCA-API-SECRET-KEY': secret,
     ...(opts.headers || {}),
   } as Record<string, string>;
   const res = await fetch(`${base}${path}`, { ...opts, headers });
@@ -169,11 +170,11 @@ export interface Bar {
   v: number;
 }
 
-async function getBrokerCreds() {
-  const key = getEnv('BROKER_KEY');
-  const secret = getEnv('BROKER_SECRET');
+function getBrokerCreds() {
+  const key = process.env.BROKER_KEY;
+  const secret = process.env.BROKER_SECRET;
   if (!key || !secret) {
-    throw new Error('Missing broker credentials');
+    throw new Error('Missing BROKER_KEY or BROKER_SECRET');
   }
   return { key, secret };
 }
@@ -184,7 +185,7 @@ export async function fetchPaperBars(
   limit = 100,
 ): Promise<Bar[]> {
   const base = 'https://data.alpaca.markets/v2';
-  const { key, secret } = await getBrokerCreds();
+  const { key, secret } = getBrokerCreds();
   const res = await fetch(
     `${base}/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}`,
     {
