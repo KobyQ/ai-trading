@@ -4,6 +4,14 @@ import { sma, rsi, detectRegime } from "../_shared/strategy.ts";
 import { insertAuditLog } from "../_shared/audit.ts";
 import { netEdge, transactionCost, slippage } from "../../../packages/strategy/index.ts";
 
+function requireEnv(name: string): string {
+  const value = Deno.env.get(name);
+  if (!value) {
+    throw new Error(`Missing environment variable: ${name}`);
+  }
+  return value;
+}
+
 async function hashBar(b: Bar) {
   const str = `${b.t}|${b.o}|${b.h}|${b.l}|${b.c}|${b.v}`;
   const buf = await crypto.subtle.digest(
@@ -147,8 +155,8 @@ async function generateAnalysis(
         risks: risks?.trim() || "High volatility",
       };
     }
-  } catch (_) {
-    // ignore and use baseline
+  } catch (e) {
+    console.error("generateAnalysis failed", e);
   }
 
   return { summary: baseSummary, risks: "High volatility" };
@@ -164,119 +172,130 @@ async function generateAnalysis(
  * - `model_version` Optional model version (for audit)
  */
 Deno.serve(async (req) => {
-  const { searchParams } = new URL(req.url);
-  const timeframe = searchParams.get("timeframe") ?? "1D";
-  const modelId = searchParams.get("model_id") ?? undefined;
-  const modelVersion = searchParams.get("model_version") ?? undefined;
-  const symbolsParam =
-    searchParams.get("symbols") ?? Deno.env.get("RESEARCH_SYMBOLS") ?? "AAPL";
-  const symbols = symbolsParam.split(",").map((s) => s.trim()).filter(Boolean);
+  try {
+    const { searchParams } = new URL(req.url);
+    const timeframe = searchParams.get("timeframe") ?? "1D";
+    const modelId = searchParams.get("model_id") ?? undefined;
+    const modelVersion = searchParams.get("model_version") ?? undefined;
+    const symbolsParam =
+      searchParams.get("symbols") ?? Deno.env.get("RESEARCH_SYMBOLS") ?? "AAPL";
+    const symbols = symbolsParam.split(",").map((s) => s.trim()).filter(Boolean);
 
-  const url = Deno.env.get("SUPABASE_URL");
-  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!url || !key) {
-    return new Response(
-      JSON.stringify({ ok: false, error: "missing env" }),
-      { status: 500, headers: { "content-type": "application/json" } },
-    );
-  }
-  const supabase = createClient(url, key);
+    const url = requireEnv("SUPABASE_URL");
+    const key = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+    const supabase = createClient(url, key);
 
-  const results: { symbol: string; id: string }[] = [];
-  await Promise.all(
-    symbols.map(async (symbol) => {
-      try {
-        await insertAuditLog(supabase, {
-          actor_type: "SYSTEM",
-          action: "RESEARCH_RUN",
-          entity_type: "research",
-          payload_json: { symbol, timeframe, model_id: modelId, model_version: modelVersion },
-        });
-
-        const bars = await fetchPaperBars(symbol, timeframe);
-        if (!bars.length) return;
-
-        await saveBars(supabase, symbol, timeframe, bars);
-        await insertAuditLog(supabase, {
-          actor_type: "SYSTEM",
-          action: "MARKET_DATA_SAVED",
-          entity_type: "market_data",
-          payload_json: { symbol, timeframe, count: bars.length },
-        });
-
-        const closes = bars.map((b) => b.c);
-        const sma20 = sma(closes, 20);
-        const rsi14 = rsi(closes, 14);
-        const regime = detectRegime(closes);
-        const last = bars[bars.length - 1];
-
-        const qty = 1;
-        const commission = 0.01;
-        const slippageBps = 5;
-        const grossEdge = last.h - last.c;
-        const txCost = transactionCost(qty, commission);
-        const slip = slippage(last.c, qty, slippageBps);
-        const net = netEdge(grossEdge, last.c, qty, commission, slippageBps);
-        const expectedReturn = net / last.c;
-        const confidence = grossEdge > 0
-          ? Math.max(0, Math.min(1, net / grossEdge))
-          : 0;
-
-        const ai = await generateAnalysis(
-          symbol,
-          sma20.at(-1) ?? 0,
-          rsi14.at(-1) ?? 0,
-          regime,
-        );
-
-        const { data, error } = await supabase
-          .from("trade_opportunities")
-          .insert({
-            symbol,
-            side: "LONG",
-            timeframe: timeframe.toLowerCase(),
-            entry_plan_json: {
-              price: last.c,
-              transaction_cost: txCost,
-              slippage: slip,
-              net_edge: net,
-            },
-            stop_plan_json: { stop: last.l },
-            take_profit_json: { tp: last.h },
-            risk_summary: `RSI ${rsi14.at(-1)?.toFixed(2)}`,
-            expected_return: expectedReturn,
-            confidence,
-            ai_summary: ai.summary,
-            ai_risks: ai.risks,
-            model_id: modelId,
-            model_version: modelVersion,
-          })
-          .select("id")
-          .single();
-
-        if (error) {
-          console.error("insert trade_opportunities failed for", symbol, error);
-          throw error;
-        }
-
-        if (data) {
-          results.push({ symbol, id: data.id });
-
+    const results: { symbol: string; id: string }[] = [];
+    const errors: string[] = [];
+    await Promise.all(
+      symbols.map(async (symbol) => {
+        try {
           await insertAuditLog(supabase, {
             actor_type: "SYSTEM",
-            action: "OPPORTUNITY_CREATED",
-            entity_type: "trade_opportunity",
-            entity_id: data.id,
+            action: "RESEARCH_RUN",
+            entity_type: "research",
             payload_json: { symbol, timeframe, model_id: modelId, model_version: modelVersion },
           });
-        }
-      } catch (e) {
-        console.error("research-run failed for", symbol, e);
-      }
-    }),
-  );
 
-  return new Response(JSON.stringify({ ok: true, opportunities: results }), {
-    headers: { "content-type": "application/json" },
-  });
+          const bars = await fetchPaperBars(symbol, timeframe);
+          if (!bars.length) return;
+
+          await saveBars(supabase, symbol, timeframe, bars);
+          await insertAuditLog(supabase, {
+            actor_type: "SYSTEM",
+            action: "MARKET_DATA_SAVED",
+            entity_type: "market_data",
+            payload_json: { symbol, timeframe, count: bars.length },
+          });
+
+          const closes = bars.map((b) => b.c);
+          const sma20 = sma(closes, 20);
+          const rsi14 = rsi(closes, 14);
+          const regime = detectRegime(closes);
+          const last = bars[bars.length - 1];
+
+          const qty = 1;
+          const commission = 0.01;
+          const slippageBps = 5;
+          const grossEdge = last.h - last.c;
+          const txCost = transactionCost(qty, commission);
+          const slip = slippage(last.c, qty, slippageBps);
+          const net = netEdge(grossEdge, last.c, qty, commission, slippageBps);
+          const expectedReturn = net / last.c;
+          const confidence = grossEdge > 0
+            ? Math.max(0, Math.min(1, net / grossEdge))
+            : 0;
+
+          const ai = await generateAnalysis(
+            symbol,
+            sma20.at(-1) ?? 0,
+            rsi14.at(-1) ?? 0,
+            regime,
+          );
+
+          const { data, error } = await supabase
+            .from("trade_opportunities")
+            .insert({
+              symbol,
+              side: "LONG",
+              timeframe: timeframe.toLowerCase(),
+              entry_plan_json: {
+                price: last.c,
+                transaction_cost: txCost,
+                slippage: slip,
+                net_edge: net,
+              },
+              stop_plan_json: { stop: last.l },
+              take_profit_json: { tp: last.h },
+              risk_summary: `RSI ${rsi14.at(-1)?.toFixed(2)}`,
+              expected_return: expectedReturn,
+              confidence,
+              ai_summary: ai.summary,
+              ai_risks: ai.risks,
+              model_id: modelId,
+              model_version: modelVersion,
+            })
+            .select("id")
+            .single();
+
+          if (error) {
+            console.error("insert trade_opportunities failed for", symbol, error);
+            throw error;
+          }
+
+          if (data) {
+            results.push({ symbol, id: data.id });
+
+            await insertAuditLog(supabase, {
+              actor_type: "SYSTEM",
+              action: "OPPORTUNITY_CREATED",
+              entity_type: "trade_opportunity",
+              entity_id: data.id,
+              payload_json: { symbol, timeframe, model_id: modelId, model_version: modelVersion },
+            });
+          }
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          errors.push(`${symbol}: ${msg}`);
+          console.error("research-run failed for", symbol, e);
+        }
+      }),
+    );
+
+    if (errors.length) {
+      const message = `research-run encountered errors: ${errors.join("; ")}`;
+      throw new Error(message);
+    }
+
+    return new Response(JSON.stringify({ ok: true, opportunities: results }), {
+      headers: { "content-type": "application/json" },
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("research-run fatal error", e);
+    return new Response(JSON.stringify({ ok: false, error: msg }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
 });
