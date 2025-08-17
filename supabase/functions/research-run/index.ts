@@ -254,7 +254,12 @@ Deno.serve(async (req) => {
           .select("id")
           .single();
 
-        if (!error && data) {
+        if (error) {
+          console.error("insert trade_opportunities failed for", symbol, error);
+          throw error;
+        }
+
+        if (data) {
           results.push({ symbol, id: data.id });
 
           await insertAuditLog(supabase, {
